@@ -33,13 +33,18 @@ typedef struct uw_scroll {
     int            stop_at_wait;   /* stop a print at its first wait */
     int            resumed;        /* the print goes on from inside its opening pause */
     int            stopped;        /* a print stopped at a wait */
+    int            hold_waits;     /* the dungeon's: stop at every wait, as stop_at_wait,
+                                    * and queue the prints made while stopped (kind 5)
+                                    * for uw_scroll_resume -- the shell holds the game
+                                    * meanwhile, as the original's scroll_wait does */
     uint8_t        colour;         /* the text colour (the graphics module's) */
     long           not_carried;
     /* A stopped print's continuation, for a program that waits where the
      * original waits (src/uw_talk.c): what each level of the emit chain
      * had left when the wait stopped it, innermost first, and the wait's
      * kind -- 1 a \P pause (200 ticks), 2 a \p pause (600), 3 a [MORE]
-     * from the \m escape, 4 a [MORE] before an open line's advance --
+     * from the \m escape, 4 a [MORE] before an open line's advance; a
+     * pending piece of kind 5 is a whole later print (hold_waits) --
      * which uw_scroll_resume finishes before emitting the rest. */
     struct { char text[0x800]; uint16_t flag; uint8_t kind; } pending[16];   /* a line is at most 0x800 */
     int            npending, insert_at;

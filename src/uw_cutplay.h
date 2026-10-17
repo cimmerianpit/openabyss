@@ -128,6 +128,10 @@ typedef struct {
                                      * faded in to `palette` (full screen) or
                                      * back to `game_pal` (in the view) */
     uint8_t    game_pal[768];
+    /* The file's sixteen colour cycles: when it last moved, its rate --
+     * the header word's (w >> 8) & 0x3f, read_anim_hdr's normalisation, 0
+     * for none -- and its first and last DAC entries */
+    struct { uint16_t started, rate; uint8_t first, last; } cycles[16];
     uint16_t   frame;               /* the frame counter, 1 at each file */
     uint16_t   rate;                /* header +0x44, frames a second */
 

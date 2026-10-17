@@ -697,7 +697,7 @@ void print_flask_status(uw_motion *m) {
     input_wait_button_release(m, 1);
 }
 
-/* print_time_status, the click on the gargoyle: "\n", message
+/* print_time_status, the click on the compass: "\n", message
  * 0x40 with the hunger's thirtieth over 0x68 and 0x67, 0x76 less the fatigue's
  * 23rd (at most 5), ".\n", 0x41 with the level's name (0x19a on) and 0x42;
  * the days played -- the record's 32-bit clock over 0x1c2000 -- as 0x43 with
@@ -850,8 +850,9 @@ void uw_motion_panel_set_value(uw_motion *m, int8_t element, uint16_t value) { p
 /* panel_flask_fill(which): the empty flask's art 0x2057 at the
  * flask's x and y 0x4a, then each level to the value, the fill element
  * moved to the row's y and shown as base + i and flushed in turn; the value
- * shown recorded. The vitality flask's base is 0x203e under an active
- * spell (rec +0x5f & 0x3c), else 0x200c; mana's 0x2025. */
+ * shown recorded. The vitality flask's base is 0x203e, the green one,
+ * while poisoned (rec +0x5f bits 2..5, the poison level), else 0x200c;
+ * mana's 0x2025. */
 void panel_flask_fill(uw_motion *m, int which) {
     uint8_t *ds = m->ds;
     uint16_t base, x = rw(ds, (uint16_t)(0x079c + which * 2)), fill = rw(ds, (uint16_t)(0x08cf + which * 2));

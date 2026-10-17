@@ -286,7 +286,7 @@ void door_close(uw_motion *m, uint16_t obj) {
     door_sound(m, obj);
 }
 
-/* level_effect_move(effect, step), from the instructions: a
+/* door_closing_check(effect, step), from the instructions: a
  * door swinging shut, each step, asked whether it fits closed where it
  * stands -- item_fits_in_tile(0x140 + the quality's subclass and nibble,
  * the door, its fine place in the effect's tile (into motion_tile_x/y),
@@ -873,7 +873,8 @@ static uint16_t trap_run(uw_motion *m, uint16_t who, uint16_t what, uint16_t tra
  * 0x170..0x17f, type over 7) passes it to the next trigger along; the
  * trigger's type must answer the event (trigger_props); the player needs
  * its bit 11 and, for a look (5) with a difficulty, a Search roll; a
- * creature its bit 12; anything else is refused by bit 12 without bit 11.
+ * creature its bit 12 and a trigger not of major class 5; anything else is
+ * refused by bit 12 without bit 11, unless the trigger is of class 5.
  * Then trap_run on the trap it links, at its (x, y), and unless bit 10 says
  * it stays, the trap freed with what it owns -- and 0x20. */
 uint16_t trigger_chain(uw_motion *m, uint16_t who, uint16_t what, uint16_t trig, int16_t kind,
@@ -893,7 +894,7 @@ uint16_t trigger_chain(uw_motion *m, uint16_t who, uint16_t what, uint16_t trig,
              * the object; the port takes it for neither the Avatar nor a
              * creature */
             UW_NOT_CARRIED(m->not_carried);
-            if ((w0 & 0x1000) && !(w0 & 0x800)) return 2;
+            if ((w0 & 0x1000) && ((w0 & 0x1c0) >> 6) != 5 && !(w0 & 0x800)) return 2;
         } else if ((rw(ls, who) & 0x1ff) == 0x7f) {
             uint16_t difficulty = (uint16_t)(rw(ls, (uint16_t)(trig + 2)) & 0x7f);
             if (!(w0 & 0x800)) return 2;
@@ -901,8 +902,10 @@ uint16_t trigger_chain(uw_motion *m, uint16_t who, uint16_t what, uint16_t trig,
                 && check_skill_roll(m, ds[(uint16_t)(rw(ds, PLAYER_RECORD_PTR) + 0x2c)], difficulty) <= 0)
                 return 2;
         } else if (((rw(ls, who) & 0x1c0) >> 6) == 1) {
-            if (!(w0 & 0x1000)) return 2;
-        } else if ((w0 & 0x1000) && !(w0 & 0x800)) {
+            /* a creature: the trigger's bit 12, on a trigger not of major
+             * class 5 */
+            if (!(w0 & 0x1000) || ((w0 & 0x1c0) >> 6) == 5) return 2;
+        } else if ((w0 & 0x1000) && ((w0 & 0x1c0) >> 6) != 5 && !(w0 & 0x800)) {
             return 2;
         }
     }
@@ -927,18 +930,6 @@ uint16_t trigger_chain(uw_motion *m, uint16_t who, uint16_t what, uint16_t trig,
  * which are the tail alone; the others are counted. A case that leaves its
  * flag set runs the tail: a trap or trigger linked from the trap's +6 goes
  * next, its result ORed in. An id past the table (a trigger) is the tail. */
-/* trap_do(trap, x, y): trap type 3's own
- * dispatch, on the trap's quality. 0x3f is the ending -- trap_pending_code
- * set to the owner plus one and event 0x400 posted, which runs
- * game_ending_sequence. The rest: 2
- * debug_camera_at_object, 3 and 4 trap_platform with the context object's
- * word 0 bits 9..12, 5 report_crime_by_player with the trap's owner, 0x18
- * trap_bullfrog with the owner, 0x28 trap_emerald, 0x29
- * trap_exploding_book, 0x2a conv_begin_with_door, 0x32
- * run_function_on_whoami_list over whoami 216 -- trap_cutscene_3 for the
- * first guard -- 0x39 trap_cutscene_3, and 0x3c..0x3e player_apply_impact
- * when the context object is the player. Any other quality
- * does nothing. 2. */
 /* direction_between and report_direction_to. */
 static int direction_between(int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
     return delta_to_direction((int8_t)(x2 - x1), (int8_t)(y2 - y1));
@@ -986,9 +977,18 @@ static void trap_cutscene_3(uw_motion *m) {
     level_effects_tick(m, 4, (uint16_t)(FRAME_BP - 0x80));
     uw_motion_cutscene_request(m, 3);
 }
-static int trap_cutscene_3_cb(uw_motion *m, uint16_t obj, int16_t arg) {
-    (void)obj; (void)arg;
-    trap_cutscene_3(m);
+
+/* object_talk_to(obj), the 0x32 hack's callback: a creature at goal 7 set
+ * to goal 1, the cursor's bounds put back and conv_begin_with_object --
+ * the conversation, which the shell opens at the top of the next pass.
+ * 0: the creature stays on the list. */
+static int object_talk_to_cb(uw_motion *m, uint16_t obj, int16_t arg) {
+    uint8_t *ls = m->lseg;
+    (void)arg;
+    if ((rw(ls, (uint16_t)(obj + 0xb)) & 0xf) == 7)
+        ww(ls, (uint16_t)(obj + 0xb), (uint16_t)((rw(ls, (uint16_t)(obj + 0xb)) & 0xfff0) | 1));
+    cursor_reset_bounds(m);
+    m->talk_object = obj;
     return 0;
 }
 
@@ -1234,12 +1234,13 @@ static void trap_platform(uw_motion *m, int16_t delta, uint16_t obj, uint16_t x,
     }
 }
 
-/* debug_camera_at_object(obj, x, y): the free camera at the
- * tile plus the object's sub-tile offsets, its height and heading from
- * word 1; shade level 6; level 9's byte held off around
- * debug_camera_preview (counted: a cut to the camera and back with the
- * fades); the recalc. */
-static void debug_camera_at_object(uw_motion *m, uint16_t obj, uint16_t x, uint16_t y) {
+/* crystal_ball(obj, x, y), the hack trap of quality 2 -- the scrying
+ * orbs of levels 2 and 4: the free camera at the tile plus the object's
+ * sub-tile offsets, its height and heading from word 1; shade level 6; the
+ * automap's switch held off around cameras_fade -- the view faded over to
+ * the free camera, held while a button is down, faded back to the Avatar's,
+ * which the host draws (view_hook); the recalc. */
+static void crystal_ball(uw_motion *m, uint16_t obj, uint16_t x, uint16_t y) {
     uint8_t *ds = m->ds, *ls = m->lseg;
     uint16_t w2 = rw(ls, (uint16_t)(obj + 2));
     uint8_t saved;
@@ -1252,7 +1253,8 @@ static void debug_camera_at_object(uw_motion *m, uint16_t obj, uint16_t x, uint1
     shade_set_level(m, 6);
     saved = ds[0x0546];
     if (saved) ds[0x0546] = 0;
-    UW_NOT_CARRIED(m->not_carried);
+    if (m->view_hook) m->view_hook(m->view_user, m, UW_VIEW_CAMERAS_FADE);
+    else UW_NOT_CARRIED(m->not_carried);
     if (saved) ds[0x0546] = 1;
     player_state_recalc(m);
 }
@@ -1265,7 +1267,8 @@ static void debug_camera_at_object(uw_motion *m, uint16_t obj, uint16_t x, uint1
  * set, the kind is not
  * 0x0d unless the record's +0x69 is under 3, and the criminal is within
  * the notice radius (props +0x1e's high nibble, in tiles) and in sight:
- * then its attitude drops one, floored at 0, and its name is printed with
+ * then its attitude drops one, floored at 0, and its name, with its
+ * article ("a goblin"), is printed with
  * string 0xe1 + the new attitude ("is angered by", "is annoyed by",
  * "notes your action"). */
 int npc_witness_crime(uw_motion *m, int16_t x, int16_t y, uint16_t obj) {
@@ -1296,7 +1299,7 @@ int npc_witness_crime(uw_motion *m, int16_t x, int16_t y, uint16_t obj) {
         if (att < 0) att = 0;
         ww(ls, (uint16_t)(obj + 0xd), (uint16_t)((rw(ls, (uint16_t)(obj + 0xd)) & 0x3fff) | (uint16_t)(att << 14)));
         buf[0] = 0;
-        format_object_name(m, buf, sizeof buf, rw(ls, obj), ls[(uint16_t)(obj + 0x1a)], 0, 0);
+        format_object_name(m, buf, sizeof buf, rw(ls, obj), ls[(uint16_t)(obj + 0x1a)], 1, 0);
         if (m->strings && uw_strings_by_id(m->strings, (uint16_t)(0x200 | (0xe1 + att)), part, (int)sizeof part) >= 0)
             strncat(buf, part, sizeof buf - strlen(buf) - 1);
         else UW_NOT_CARRIED(m->not_carried);
@@ -1327,15 +1330,14 @@ void report_crime(uw_motion *m, uint16_t obj, uint8_t kind, uint16_t bp) {
     if ((ls[(uint16_t)(obj + 6)] & 0x1f) < 0x1c) ls[(uint16_t)(obj + 6)] &= 0xc0;
 }
 
-/* obj_remove_from_world(obj): out of its tile's chain, 1. */
+/* obj_remove_from_world(obj): object_chain_remove from its tile's chain
+ * -- its contents freed, it unlinked and freed, off the active list --
+ * and 1. */
 static int obj_remove_from_world_cb(uw_motion *m, uint16_t obj, int16_t arg) {
     uint8_t *ls = m->lseg;
     uint16_t pos = rw(ls, (uint16_t)(obj + 0x16));
-    uw_objpool pool;
     (void)arg;
-    pool_from_ds(m, &pool);
-    uw_object_list_remove(&pool, (uint16_t)(tile_ptr(m, (uint16_t)(pos >> 10), (uint16_t)((pos & 0x3f0) >> 4)) + 2), obj);
-    pool_to_ds(m, &pool);
+    object_chain_remove(m, (uint16_t)(tile_ptr(m, (uint16_t)(pos >> 10), (uint16_t)((pos & 0x3f0) >> 4)) + 2), obj);
     return 1;
 }
 
@@ -1353,7 +1355,7 @@ void trap_tyball_death(uw_motion *m) {
     for (i = 9; i > 0; i--) run_function_on_whoami_list(m, ds[(uint16_t)(0x12c0 + i)], 0, 0, obj_remove_from_world_cb);
     link = (uint16_t)(tile_ptr(m, 0x17, 0x38) + 2);
     for (o = deref_link(m, link); o; ) {
-        uint16_t next = deref_link(m, (uint16_t)(o + 6));
+        uint16_t next = deref_link(m, (uint16_t)(o + 4));
         if ((rw(ls, o) & 0x1ff) == 0x1a0) {
             pool_from_ds(m, &pool);
             uw_object_list_remove(&pool, link, o);
@@ -1403,7 +1405,18 @@ void use_tyballs_orb(uw_motion *m, uint16_t obj, int applied) {
 }
 
 enum { TRAP_PENDING_CODE = 0x1c8f };
-
+/* trap_do(trap, x, y): trap type 3's own
+ * dispatch, on the trap's quality. 0x3f is the ending -- trap_pending_code
+ * set to the owner plus one and event 0x400 posted, which runs
+ * game_ending_sequence. The rest: 2
+ * crystal_ball, 3 and 4 trap_platform with the context object's
+ * word 0 bits 9..12, 5 report_crime_by_player with the trap's owner, 0x18
+ * trap_bullfrog with the owner, 0x28 trap_emerald, 0x29
+ * trap_exploding_book, 0x2a conv_begin_with_door, 0x32
+ * run_function_on_whoami_list over whoami 216 -- object_talk_to for the
+ * first guard -- 0x39 trap_cutscene_3, and 0x3c..0x3e player_apply_impact
+ * when the context object is the player. Any other quality
+ * does nothing. 2. */
 static uint16_t trap_do(uw_motion *m, uint16_t trap, uint16_t x, uint16_t y, uint16_t bp) {
     uint8_t *ds = m->ds, *ls = m->lseg;
     uint8_t q = (uint8_t)(ls[(uint16_t)(trap + 4)] & 0x3f);
@@ -1417,7 +1430,7 @@ static uint16_t trap_do(uw_motion *m, uint16_t trap, uint16_t x, uint16_t y, uin
             player_apply_impact(m, (uint16_t)(q - 0x3b), (int16_t)(ls[(uint16_t)(trap + 6)] & 0x3f));
         break;
     case 2:
-        debug_camera_at_object(m, trap, x, y);
+        crystal_ball(m, trap, x, y);
         break;
     case 3: case 4:
         trap_platform(m, (int16_t)((rw(ls, rw(ds, TRAP_WHAT)) & 0x1e00) >> 9), trap, x, y);
@@ -1438,7 +1451,7 @@ static uint16_t trap_do(uw_motion *m, uint16_t trap, uint16_t x, uint16_t y, uin
         conv_begin_with_door(m);
         break;
     case 0x32:
-        run_function_on_whoami_list(m, 216, 0, 0, trap_cutscene_3_cb);
+        run_function_on_whoami_list(m, 216, 0, 0, object_talk_to_cb);
         break;
     case 0x39:
         trap_cutscene_3(m);

@@ -527,7 +527,8 @@ static int8_t filter_walker(uw_motion *m, uint16_t f) {
     }
     if (f & 0x10) {
         if ((f & 0xf8) == 0x10) {
-            /* Water: the splash, and the wading state. */
+            /* Water and nothing else: the splash, and the creature drowns --
+             * action 0xc, dying, at its last frame (3). */
             ds[AI_MOTION_BLOCKED] = 1;
             ds[AI_MAY_MOVE] = 0;
             spawn_class7(m, npc, 6, 3, 0, 0, (uint8_t)((int16_t)rw(ds, BLOCK_WALKER) >> 8),

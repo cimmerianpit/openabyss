@@ -75,7 +75,8 @@ enum {
     MODE_TITLE    = 0x102,          /* the shell's: game_main before main_menu -- the two
                                      * presentation screens and the title cutscene */
     MODE_LEAVING  = 0x103,          /* the shell's: game_return_to_menu after its cutscene */
-    MODE_ENDING   = 0x104           /* the shell's: game_ending_sequence's screens */
+    MODE_ENDING   = 0x104,          /* the shell's: game_ending_sequence's screens */
+    MODE_DRAINING = 0x105           /* the shell's: game_return_to_menu's input drain, a button still down */
 };
 
 struct uw_shell {
@@ -98,6 +99,11 @@ struct uw_shell {
     uw_chargen_ui  cgui;
     uw_automap     map;
     uw_scroll      scroll;
+    uint32_t       scroll_wait_until;  /* a dungeon print's pause: its end (0: a [MORE], none) */
+    int            scroll_wait_set;
+    uint16_t       mouse_mask;         /* the host mouse's buttons, before mouse_btns' keypad */
+    long           beep_left;          /* do_beep's tone: samples still to sound */
+    double         beep_phase, beep_step;
     uw_strings     pak;
     uw_ark         ark;
     uw_blob        terrain;
@@ -158,6 +164,7 @@ struct uw_shell {
     /* input_tick's bookkeeping between passes */
     int            source_toggle;   /* keyboard or mouse first this pass */
     int            waiting;         /* a release wait or a drag wait stood at the pass's top */
+    int            map_release;     /* the map's erase done on its press: mouse_release(1) until the button is up */
     uint32_t       click_handler;   /* the hotspot the last click reached */
     int            click_panel_mode;
     int16_t        drag_x, drag_y;  /* where the button went down, for cursor_wait_for_drag */
@@ -198,6 +205,7 @@ static inline int harness_script_over(const uw_shell *sh) { (void)sh; return 1; 
 static inline void harness_audio(uw_shell *sh) { (void)sh; }
 static inline void harness_end(uw_shell *sh) { (void)sh; }
 static inline void harness_cutscene_end(uw_shell *sh, int cutscene) { (void)sh; (void)cutscene; }
+static inline void harness_vortex_frame(uw_shell *sh, int frame) { (void)sh; (void)frame; }
 
 #else
 
@@ -243,6 +251,8 @@ void harness_audio(uw_shell *sh);
 void harness_end(uw_shell *sh);
 /* --cutscene N over: its counts, and --dump's screen and palette */
 void harness_cutscene_end(uw_shell *sh, int cutscene);
+/* a vortex frame shown: a vpage's page written at its frame */
+void harness_vortex_frame(uw_shell *sh, int frame);
 
 #endif
 

@@ -25,7 +25,7 @@
  * (key_step_or_turn), both only while the effects-on-move flag is set.
  *
  * What this does not carry, counted in `unsupported`: a door swinging
- * shut when no `door_move` is attached (level_effect_move, which asks
+ * shut when no `door_move` is attached (door_closing_check, which asks
  * item_fits_in_tile whether the closed door fits) and the moving door's
  * expiry when no `door_seat` is attached (item_fits_in_tile, the door's own
  * motion and a sound) -- both the game's side's, src/uw_motion_trap.c's
@@ -59,7 +59,7 @@ typedef struct uw_effects_s {
      * it was turned back and the record stays. NULL: counted. */
     int     (*door_seat)(void *user, struct uw_effects_s *e, int index);
     /* level_effect_animate's turn with the direction bit set (a door
-     * swinging shut): level_effect_move(index, step), which turns the swing
+     * swinging shut): door_closing_check(index, step), which turns the swing
      * back, through the record, when the door no longer fits. NULL: counted.
      * `in_expire` is set while level_effect_expire's last pass animates. */
     void    (*door_move)(void *user, struct uw_effects_s *e, int index, int step);

@@ -66,7 +66,10 @@ static void draw_string(uw_menu *u, const char *s, int x, int y, uint8_t colour)
     }
 }
 
-static void draw_message(uw_menu *u, uint16_t id, int y, int dx) {
+/* A message centred two ways: main_menu's error at 0xa0 - w / 2, the save
+ * list's reentry at (0x140 - w) / 2 + 10 -- a pixel apart for an odd
+ * width */
+static void draw_message(uw_menu *u, uint16_t id, int y, int reentry) {
     char text[256];
     int w;
     if (!u->m->strings || uw_strings_by_id(u->m->strings, id, text, (int)sizeof text) < 0) {
@@ -74,12 +77,14 @@ static void draw_message(uw_menu *u, uint16_t id, int y, int dx) {
         return;
     }
     w = string_width(u, text);
-    draw_string(u, text, 0xa0 - w / 2 + dx, y, COLOUR_HIGHLIGHT);
+    draw_string(u, text, reentry ? (0x140 - w) / 2 + 10 : 0xa0 - w / 2, y, COLOUR_HIGHLIGHT);
 }
 
 /* ---- the saves ------------------------------------------------------------- */
 
-/* enumerate_save_games */
+/* enumerate_save_games: each slot's DESC read with fgets(0x27) and
+ * nothing more -- a newline stays in the text, and a file fgets reads
+ * nothing from leaves the row as it was */
 static void enumerate_saves(uw_menu *u) {
     int slot;
     u->saves_mask = 0;
@@ -88,12 +93,8 @@ static void enumerate_saves(uw_menu *u) {
         FILE *f;
         snprintf(path, sizeof path, "%s/SAVE%d/DESC", u->saves, slot + 1);
         f = uw_fopen(path, "r");
-        memset(u->desc[slot], 0, DESC_ROW);
         if (f) {
-            if (fgets(u->desc[slot], 0x27, f)) {
-                char *nl = strchr(u->desc[slot], '\n');
-                if (nl) *nl = 0;
-            }
+            if (!fgets(u->desc[slot], 0x27, f)) { /* the row as it was */ }
             u->saves_mask |= 1u << slot;
             fclose(f);
         }
@@ -164,12 +165,18 @@ static void draw_items(uw_menu *u, int highlight) {
         blit(u, u->item[i].face[i == highlight], u->item[i].w, u->item[i].h, u->item[i].x, u->item[i].y);
 }
 
+/* the lines at 0xa0 - w / 2, a signed halving -- a pixel right of menu_run's
+ * (0x140 - w) / 2 hit box for an odd width -- each first cut, in place and
+ * a character at a time, to at most 0x13e pixels, so the hit box takes the
+ * cut width too */
 static void draw_list(uw_menu *u, int highlight) {
     int i;
     memcpy(u->screen, u->opscr.data, 64000);
     for (i = 0; i < u->list_count; i++) {
-        int w = string_width(u, u->list_text[i]);
-        draw_string(u, u->list_text[i], (0x140 - w) / 2, LINE_BASE - LINE_STEP * i,
+        int w;
+        while ((w = string_width(u, u->list_text[i])) > 0x13e && u->list_text[i][0])
+            u->list_text[i][strlen(u->list_text[i]) - 1] = 0;
+        draw_string(u, u->list_text[i], 0xa0 - w / 2, LINE_BASE - LINE_STEP * i,
                     (uint8_t)(i == highlight ? COLOUR_HIGHLIGHT : COLOUR_PLAIN));
     }
 }
@@ -321,7 +328,7 @@ void uw_menu_list_open(uw_menu *u) {
 
 void uw_menu_list_picked(uw_menu *u) {
     memcpy(u->screen, u->opscr.data, 64000);
-    draw_message(u, MSG_REENTER, MSG_Y, 10);   /* (0x140 - w) / 2 + 10 */
+    draw_message(u, MSG_REENTER, MSG_Y, 1);
     u->list_up = 0;
 }
 
@@ -375,7 +382,7 @@ bool uw_victory_draw(uw_motion *m, const char *dir, uint8_t *page) {
     uint8_t *ds = m->ds;
     uint16_t rec = rw(ds, 0x7270), row = rw(ds, 0x7272);   /* player_record_ptr, the class row */
     uw_font f;
-    char path[600], line[0x48], part[0x48], name[16];
+    char path[600], line[0x48], part[0x48], name[0x1f];
     int y, h, i;
     uint32_t clock = (uint32_t)rw(ds, (uint16_t)(rec + 0xce)) | (uint32_t)rw(ds, (uint16_t)(rec + 0xd0)) << 16;
     uint32_t exp = (uint32_t)rw(ds, (uint16_t)(rec + 0x4e)) | (uint32_t)rw(ds, (uint16_t)(rec + 0x50)) << 16;
@@ -383,8 +390,9 @@ bool uw_victory_draw(uw_motion *m, const char *dir, uint8_t *page) {
     if (!uw_font_open(&f, path)) { UW_NOT_CARRIED(m->not_carried); return false; }
     h = (int)f.height;
     y = 0xb4;
-    memcpy(name, ds + rec, 14);
-    name[14] = 0;
+    /* get_string(player_name_handle): the record's whole name */
+    memcpy(name, ds + rec, 0x1e);
+    name[0x1e] = 0;
     page_draw_centred(page, &f, name, y);
     y -= h;
     victory_string(m, 0x2bb, line, sizeof line);                   /* "A level " */

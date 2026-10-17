@@ -66,6 +66,19 @@ int uw_palette_fade_step(uw_palette_fade *f) {
 
 /* ---- the view wipe ------------------------------------------------------ */
 
+/* The EMS copy put back: 0x4bec bytes of a frame buffer whose rows lie 174
+ * bytes apart from its offset 2 (setup_frame_buf), so only the pixels below
+ * that byte come back to each step -- frame row 111 up to column 120, none
+ * of row 112, the view's top line -- and the rest keep what the step left.
+ * The fade's end shows the whole image. */
+static void wipe_restore(uint8_t *view, const uint8_t *saved, size_t len) {
+    size_t k;
+    for (k = 0; k < len; k++) {
+        size_t r = k / UW_VIEW_W, c = k % UW_VIEW_W;
+        if (2 + r * (UW_VIEW_W + 2) + c < 0x4bec) view[k] = saved[k];
+    }
+}
+
 void uw_screen_fade_begin(uw_screen_wipe *w, int out) {
     w->n = UW_SCREEN_FADE_STEPS;
     w->out = out;
@@ -105,11 +118,13 @@ int uw_screen_fade_step(uw_screen_wipe *w, uint8_t *view, size_t len,
     if (w->i > 0) {
         /* the restore the original does after each present, done here
          * before the next frame instead: the caller presented in between */
-        if (w->i < w->n) memcpy(view, w->saved, w->saved_len);
+        if (w->i < w->n) wipe_restore(view, w->saved, w->saved_len);
         uw_gfx_remap_buffer(view, len, light + w->i * UW_LIGHT_ROW);
         w->i--;
         return 1;
     }
+    /* the end: the whole view, its top line too -- orb1's states after
+     * each fade-in show the image there, where the steps showed the clear */
     memcpy(view, w->saved, w->saved_len);
     w->stage = 2;
     return 1;

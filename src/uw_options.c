@@ -147,7 +147,9 @@ static void page_quit(uw_options *o) {
 
 static void page_audio(uw_options *o) {
     uint8_t *ds = o->m->ds;
-    int music = rw(ds, PAGE) == PAGE_MUSIC, on = music ? ds[MUSIC_ENABLED] != 0 : ds[SFX_ENABLED] != 0;
+    /* music_is_enabled and sfx_is_enabled: 0 without a driver */
+    int music = rw(ds, PAGE) == PAGE_MUSIC,
+        on = music ? ds[MUSIC_AVAILABLE] && ds[MUSIC_ENABLED] : ds[SFX_AVAILABLE] && ds[SFX_ENABLED];
     draw_page_bg(o, 4);
     ww(ds, HIGHLIGHT_IMAGE, 0xffff);
     draw_row(o, 5, music ? 0x33 : 0x34);
@@ -208,9 +210,9 @@ static int write_file(const char *path, const void *data, size_t n) {
     return 1;
 }
 
-/* combat_state_restore, save_game's first act: the assault
+/* combat_state_save, save_game's first act: the assault
  * record into the player record. */
-static void combat_state_restore(uw_motion *m) {
+static void combat_state_save(uw_motion *m) {
     uint8_t *ds = m->ds;
     uint16_t rec = rw(ds, PLAYER_RECORD_PTR);
     ds[rec + 0xba] = ds[0x00c5];
@@ -235,7 +237,7 @@ static void save_to_slot(uw_options *o, int slot, const char *desc) {
     int ok;
     uw_motion_print_ds_string(m, 0x1c3c);           /* "\n" */
     print_message(m, 0xa7);                          /* "Saving Game " */
-    combat_state_restore(m);
+    combat_state_save(m);
     n = uw_motion_save_player_dat(m, pd, sizeof pd, known);
     if (n > 0) print_message(m, 0xaa);
     ok = n > 0 && o->ark && uw_motion_level_save(m, o->ark);
@@ -287,6 +289,10 @@ static void restore_from_slot(uw_options *o, int slot, uint32_t clock, int in_ga
         snprintf(tmp, sizeof tmp, "%s/LEV.ARK", dir);
         uw_ark_close(o->ark);
         if (uw_ark_open(o->ark, tmp)) {
+            /* savegame_restore_progress's "..." after SAVE0 emptied and
+             * after the slot copied in; the other two after PLAYER.DAT and
+             * after the level (uw_motion_restore's) */
+            print_message(m, 0xaa);
             print_message(m, 0xaa);
             ok = uw_motion_restore(m, pd.data, pd.size, o->ark, o->terrain, o->terrain_size);
         }
@@ -299,7 +305,12 @@ static void restore_from_slot(uw_options *o, int slot, uint32_t clock, int in_ga
     uw_free(&pd);
     uw_free(&ark);
     uw_free(&bg);
-    if (!ok) { if (in_game) print_message(m, 0xa3); return; }
+    if (!ok) {
+        /* the progress line ended, then (from the panel) "Restore failed" */
+        if (m->scroll) uw_scroll_print(m->scroll, "\n");
+        if (in_game) print_message(m, 0xa3);
+        return;
+    }
     if (!in_game) { uw_motion_menu_restore_tail(m); o->restored = 1; return; }
     /* save_or_restore_slot's tail: weapons_load_colourmap (the boot's),
      * dungeon_tick_update, the level-entered flag, the panels built, the
@@ -399,14 +410,17 @@ static void click_quit(uw_options *o, int row) {
     if (row == 4 || row == 3) close_panel(o);
 }
 
-/* options_click_music / _sfx: the setting for rows 4
- * and 3; then the page is left on any row when it was opened for this one
- * setting, else only on row 2, DONE */
+/* options_click_music / _sfx: rows 4 and 3 turn the setting on and off
+ * through music_set_enabled and sfx_set_enabled -- nothing without a
+ * driver, and with one the music started or stopped and the effects
+ * silenced -- and the page drawn again; then the page is left on any row
+ * when it was opened for this one setting, else only on row 2, DONE */
 static void click_audio(uw_options *o, int row) {
     uint8_t *ds = o->m->ds;
     int music = rw(ds, PAGE) == PAGE_MUSIC;
     if (row == 4 || row == 3) {
-        ds[music ? MUSIC_ENABLED : SFX_ENABLED] = (uint8_t)(row == 4);
+        if (music) music_set_enabled(o->m, row == 4);
+        else sfx_set_enabled(o->m, row == 4);
         page_audio(o);
     }
     if (ds[CLOSE_AFTER] || row == 2) leave_setting(o);
@@ -432,7 +446,8 @@ static void click_detail(uw_options *o, int row) {
 }
 
 /* options_click_row: the page's handler with the row, the
- * list area refilled. The handler runs with the cursor hidden, and a
+ * list area refilled, the cursor shown and the button's release waited
+ * for (input_wait_button_release(0)). The handler runs with the cursor hidden, and a
  * restore whose tick finds the Avatar dead never comes back to the show:
  * player_death's game_return_to_menu(1) runs inside it, the title and all,
  * and the show waits until the game is entered again and the calls unwind
@@ -450,7 +465,19 @@ static void click_row(uw_options *o, int row, uint32_t clock) {
     default: break;
     }
     if (m->return_to_menu) o->show_owed++;
-    else uw_motion_cursor_show(m);
+    else {
+        uw_motion_cursor_show(m);
+        input_wait_button_release(m, 0);
+    }
+}
+
+/* What options_click_row still owes once game_return_to_menu returns into
+ * it: the cursor_show and the release wait, for each click that died. */
+void uw_options_pay_owed(uw_options *o) {
+    for (; o->show_owed > 0; o->show_owed--) {
+        uw_motion_cursor_show(o->m);
+        input_wait_button_release(o->m, 0);
+    }
 }
 
 /* ---- the session ------------------------------------------------------------------ */

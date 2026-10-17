@@ -40,7 +40,8 @@ typedef struct {
     char       dir[512];
     uw_blob    blank;          /* BLNKMAP.BYT, the parchment */
     uw_blob    font_big;       /* FONTBIG.SYS, the level number */
-    uw_blob    font_small;     /* FONT5X6P.SYS, the notes */
+    uw_blob    font_small;     /* FONT4X5P.SYS, the notes */
+    uw_blob    font_cur;       /* FONT5X6P.SYS, the font every path leaves loaded: the erase measures in it */
     uw_ark    *ark;            /* the level archive: the blocks and the notes */
     int        level_shown;    /* automap_level_shown */
     int        active;         /* the screen is up */
@@ -49,6 +50,7 @@ typedef struct {
     int        nnotes, notes_dirty;
     /* the note editor (automap_click's last region) and the delete before it */
     int        editing, typed_len, deleting;
+    int        beeps;          /* do_beep(0x12c, 10)s owed: the host's speaker */
     char       typed[0x32];
     int16_t    note_x, note_y;
     long       not_carried;

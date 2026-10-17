@@ -458,7 +458,7 @@ enum {
     FOOTSTEP_NEXT   = 0x0779,   /* footstep_next_clock, 32 bits */
     FOOTSTEP_FOOT   = 0x077d,
     FOOTSTEP_HANDLE = 0x077e,
-    FOOTSTEP_CLOCK  = 0x077f    /* footstep_clock, 32 bits */
+    FOOTSTEP_CLOCK  = 0x077f    /* water_sound_clock, 32 bits */
 };
 
 uint32_t rd32(const uint8_t *ds, uint16_t at) {
@@ -566,7 +566,8 @@ enum {
 /* movement_set_mode(mode): movement_from_keyboard is mode >= 0.
  * A mode of 0 or more is the keyboard's: movement_mode_from_keys, then 0
  * stops (both magnitudes zeroed), and 6 and 7, the jumps, set the mode --
- * 1 instead while motion_block_flags bit 4 or the record's +0xb8 is 1; the
+ * 1 instead while the player is in the air (collision_face bit 4) or
+ * swimming (the record's +0xb8 is 1); the
  * rest leave what the keys set. -1 is the mouse's, once a pass: with the left
  * button alone down (or either with the record's +0x5f bit 1) the cursor's
  * place in the view (the event's +0 and +2, rows counted upward) picks the
@@ -575,7 +576,7 @@ enum {
  * turning by how far into the left or right third (0x180 over the width,
  * negative to the left) and going forward by how far above two fifths (0xc0
  * over the height). Both buttons down is mode 1, or the jump (7) unless
- * motion_block_flags bit 4 or the record's +0xb8 is 1. */
+ * the player is in the air or swimming. */
 void movement_set_mode(uw_motion *m, int16_t mode) {
     uint8_t *ds = m->ds;
     uint16_t rec = rw(ds, PLAYER_RECORD_PTR), ev, buttons;
@@ -588,7 +589,7 @@ void movement_set_mode(uw_motion *m, int16_t mode) {
             ww(ds, TURN_INPUT, 0);
             ww(ds, MOVEMENT_MODE, 0);
         } else if (mode == 6 || mode == 7) {
-            ww(ds, MOVEMENT_MODE, (ds[BLOCK_FLAGS] & 0x10) || ds[(uint16_t)(rec + 0xb8)] == 1 ? 1 : (uint16_t)mode);
+            ww(ds, MOVEMENT_MODE, (ds[COLLISION_FACE] & 0x10) || ds[(uint16_t)(rec + 0xb8)] == 1 ? 1 : (uint16_t)mode);
         }
         return;
     }
@@ -596,7 +597,7 @@ void movement_set_mode(uw_motion *m, int16_t mode) {
     if (!(buttons == 1 || ((buttons & 1) && ((ds[(uint16_t)(rec + 0x5f)] >> 1) & 1)))) {
         if (buttons == 3) {
             ww(ds, MOVEMENT_MODE, 1);
-            if (!(ds[BLOCK_FLAGS] & 0x10) && ds[(uint16_t)(rec + 0xb8)] != 1) ww(ds, MOVEMENT_MODE, 7);
+            if (!(ds[COLLISION_FACE] & 0x10) && ds[(uint16_t)(rec + 0xb8)] != 1) ww(ds, MOVEMENT_MODE, 7);
         }
         return;
     }
@@ -659,12 +660,15 @@ void debug_camera_goto(uw_motion *m, int16_t which) {
     if (camera_is_free(m)) ww(ds, PENDING_EVENTS, (uint16_t)(rw(ds, PENDING_EVENTS) | 2));    /* post_event(2) */
 }
 
-/* debug_camera_set_target(mode), through the five table words at 0c9e by
- * mode + 1: -1 clears camera_follow_ptr, the free camera then shown (no
- * event); 1 puts it back on the Avatar, with event 2 when it was not there.
- * 0 (a creature's eye), 2 (the chase view) and 3 (the orbit)
- * point it at targets view_place_camera does not render in the port, and
- * are counted. */
+/* debug_camera_set_target (attach_eye)(mode), through the five table words
+ * at 0c9e by mode + 1: -1 clears camera_follow_ptr, the free camera then
+ * shown (no event); 1 puts it back on the Avatar, with event 2 when it was
+ * not there. 3 points it at the record two before the mobile list's
+ * (the vortex's eye) when it is at or past the one before, and falls into
+ * 2, which points it at the one before (the chase view) when it is at or
+ * past the list -- offsets compared, as far pointers are -- each with
+ * event 2. view_place_camera renders neither in the port: the vortex's
+ * frames are the host's (view_hook). 0, a creature's eye, is counted. */
 void debug_camera_set_target(uw_motion *m, int16_t mode) {
     uint8_t *ds = m->ds;
     if (mode == -1) {
@@ -677,7 +681,18 @@ void debug_camera_set_target(uw_motion *m, int16_t mode) {
             ww(ds, (uint16_t)(VIEW_CAMERA_OBJECT + 2), rw(ds, (uint16_t)(TRACKED_OBJECT + 2)));
             ww(ds, PENDING_EVENTS, (uint16_t)(rw(ds, PENDING_EVENTS) | 2));    /* post_event(2) */
         }
-    } else if (mode >= 0 && mode <= 3) {
+    } else if (mode == 2 || mode == 3) {
+        /* critdata, the mobile list's start: the Avatar is its first record */
+        uint16_t crit = (uint16_t)(rw(ds, TRACKED_OBJECT) - 0x1b);
+        if (mode == 3 && (uint16_t)(crit - 0x1b) <= rw(ds, VIEW_CAMERA_OBJECT)) {
+            ww(ds, VIEW_CAMERA_OBJECT, (uint16_t)(crit - 2 * 0x1b));
+            ww(ds, PENDING_EVENTS, (uint16_t)(rw(ds, PENDING_EVENTS) | 2));    /* post_event(2) */
+        }
+        if (rw(ds, VIEW_CAMERA_OBJECT) >= crit) {
+            ww(ds, VIEW_CAMERA_OBJECT, (uint16_t)(crit - 0x1b));
+            ww(ds, PENDING_EVENTS, (uint16_t)(rw(ds, PENDING_EVENTS) | 2));
+        }
+    } else if (mode == 0) {
         UW_NOT_CARRIED(m->not_carried);
     }
 }
@@ -799,7 +814,7 @@ static int effects_door_seat(void *user, uw_effects *e, int index) {
     return level_effect_door_seat(f->m, e, index, (uint16_t)(f->bp - 2 - 4 - 4 - 4 - 2));
 }
 
-/* level_effect_move from level_effect_animate, whose frame is 0x10 under
+/* door_closing_check from level_effect_animate, whose frame is 0x10 under
  * the tick's (two words of arguments, a far return, BP) or, in the
  * expiry's last pass, 0x1c under the expiry's (0xe of locals, SI, DI, two
  * words, the return, BP); the move's own is 0x18 under the animate's (0xa

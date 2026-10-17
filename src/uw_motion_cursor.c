@@ -87,12 +87,16 @@ static void cursor_draw(uw_motion *m) {
 }
 
 /* cursor_blit: cursor_draw, then the shape's art at cursor_x -
- * hot_x, cursor_y + hot_y with colour 0 skipped, clipped. */
+ * hot_x, cursor_y + hot_y with colour 0 skipped, clipped -- by the show's
+ * window clip, whose bottom test keeps only rows above the window's foot:
+ * nothing of the cursor reaches the screen's last line. */
 static void cursor_blit(uw_motion *m) {
     uint8_t *ds = m->ds;
     cursor_draw(m);
     m->span_variant = 1;
+    m->clip_foot = 1;
     uw_motion_gr_draw_art(m, rw(ds, CURSOR_SHAPE), rs(ds, CURSOR_X) - rs(ds, CURSOR_HOT_X), rs(ds, CURSOR_Y) + rs(ds, CURSOR_HOT_Y));
+    m->clip_foot = 0;
     m->span_variant = 0;
 }
 
@@ -469,7 +473,8 @@ int projectile_aim_from_cursor(uw_motion *m) {
  * mouse_button_released, so a release wait's -1 is gone by the next render
  * (seed1); one down with no event pending latches the cursor's position as a
  * click (click_latch_x/_y, mouse_pending_event). mouse_button_mask's keyboard
- * fallback is not modelled. */
+ * fallback -- keypad Ins and Del as the buttons -- is the host's, in
+ * `buttons`. */
 void uw_motion_cursor_poll(uw_motion *m) {
     uint8_t *ds = m->ds;
     if (!m->buttons) {
@@ -617,6 +622,27 @@ void uw_motion_cursor_move(uw_motion *m, int16_t x, int16_t y) {
 void uw_motion_cursor_hide(uw_motion *m) { cursor_hide(m); }
 void uw_motion_imgbuf_restore(uw_motion *m, uint16_t handle) { imgbuf_restore(m, handle); }
 void uw_motion_cursor_show(uw_motion *m) { cursor_show(m); }
+void uw_motion_cursor_shape_push(uw_motion *m, uint16_t shape) { cursor_shape_push(m, shape); }
+void uw_motion_cursor_shape_pop(uw_motion *m, uint16_t flags) { cursor_shape_pop(m, flags); }
+
+void uw_motion_cursor_bounds(uw_motion *m, int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
+    uint8_t *ds = m->ds;
+    ww(ds, CURSOR_BOUND_X0, (uint16_t)x0);
+    ww(ds, CURSOR_BOUND_Y0, (uint16_t)y0);
+    ww(ds, CURSOR_BOUND_X1, (uint16_t)x1);
+    ww(ds, CURSOR_BOUND_Y1, (uint16_t)y1);
+}
+void uw_motion_cursor_reset_bounds(uw_motion *m) { cursor_reset_bounds(m); }
+
+/* cursor_move_to(x, y), mouse_putxy: hidden, the regions updated where it
+ * stands -- before the move -- the position written unclamped, shown. */
+void uw_motion_cursor_move_to(uw_motion *m, int16_t x, int16_t y) {
+    cursor_hide(m);
+    cursor_region_update(m);
+    ww(m->ds, CURSOR_X, (uint16_t)x);
+    ww(m->ds, CURSOR_Y, (uint16_t)y);
+    cursor_show(m);
+}
 int uw_motion_cursor_overlaps_rect(uw_motion *m, int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
     return cursor_overlaps_rect(m, x1, y1, x2, y2);
 }

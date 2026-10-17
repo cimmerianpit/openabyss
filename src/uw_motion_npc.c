@@ -30,7 +30,8 @@ static void set_heading(uw_motion *m, uint8_t h) {
     nbset(m, 0x18, (uint8_t)((nb(m, 0x18) & 0xe0) | (h & 0x1f)));
 }
 
-/* creature_set_goal: goal 4's gtarg is first saved into +0x0d. */
+/* creature_set_goal: the old goal nibble, when it is 4, first saved into +0x0d's
+ * low nibble. */
 void creature_set_goal(uw_motion *m, int goal, int gtarg) {
     if ((nb(m, 0xb) & 0xf) == 4)
         nwset(m, 0xd, (uint16_t)((nw(m, 0xd) & 0xfff0) | (nw(m, 0xb) & 0xf)));
@@ -606,7 +607,7 @@ static void npc_goto(uw_motion *m, uint8_t x, uint8_t y, uint8_t z) {
         }
         if (path_slot_alloc(m, &slot)
             && pathfind_between_tiles(m, ds[AI_SELF_TILE_X], ds[AI_SELF_TILE_Y],
-                                      (uint8_t)((nw(m, 2) & 0x7f) >> 3), x, y, z, creature_vigour(m))) {
+                                      (uint8_t)((nw(m, 2) & 0x7f) >> 3), x, y, z, creature_acceptable_danger(m))) {
             uint16_t rec = (uint16_t)(PATH_POOL + slot * PATH_RECORD);
             ww(ds, NPC_PATH_SLOT_MASK, (uint16_t)(rw(ds, NPC_PATH_SLOT_MASK) & ~(1 << slot)));
             path_pack(m, rec);
@@ -1009,7 +1010,7 @@ static void goal_talk(uw_motion *m) {
     }
 }
 
-/* creature_goal_go_home, goal 12: a hostile creature not
+/* creature_goal_hover, goal 12: a hostile creature not
  * watching (goal 4) watches instead; off its home tile it walks there; on it,
  * it stands (mode 6, idle, the counter stepped half the time). */
 static void goal_go_home(uw_motion *m) {
@@ -1453,8 +1454,9 @@ int hostile_creature_nearby(uw_motion *m, uint16_t bp) {
  * scanned for a class 6 subclass 2 object whose link holds a class 6
  * subclass 0 type 9, and trap_dispatch called on it, so a creature crossing
  * your tripwires while you sleep sets them off -- and then moves to the
- * path's second-to-last tile (the index is PATH_LEN * 4 - 8,
- * one short of the player's own tile: it does not arrive on top of you),
+ * path's entry PATH_LEN - 2 (the index PATH_LEN * 4 - 8 of a buffer of
+ * PATH_LEN + 1 entries, whose last is the player's tile): two tiles short
+ * of the player, so it does not arrive on top of you,
  * takes +0x19 bit 0, is sent at the player's tile and sets the flag. 1 when
  * it moved, which stops the sweep. `bp` is this routine's frame: 0x1c of
  * locals and SI, DI under it, where item_fits_in_tile keeps its query. */

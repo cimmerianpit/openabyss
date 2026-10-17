@@ -674,10 +674,10 @@ int path_slot_alloc(uw_motion *m, uint8_t *slot) {
     return 0;
 }
 
-/* creature_vigour: (hp * 4) / max + (critter+0x1c & 0xf) / 4, zero
- * for an owned creature, one with no maximum, word 0 bit 13, and the golem
+/* creature_acceptable_danger: (hp * 4) / max + (critter+0x1c & 0xf) / 4, zero
+ * for a creature that is not hostile (attitude other than 0), one with no maximum, word 0 bit 13, and the golem
  * (whoami 0x16) on level 6. The search's cost limit. */
-uint8_t creature_vigour(uw_motion *m) {
+uint8_t creature_acceptable_danger(uw_motion *m) {
     uint8_t *ds = m->ds;
     if ((nw(m, 0xd) >> 14) || crit(m, 4) == 0 || (nw(m, 0) & 0x2000)) return 0;
     if (rw(ds, CURRENT_LEVEL_WORD) == 6 && nb(m, 0x1a) == 0x16) return 0;

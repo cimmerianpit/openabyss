@@ -495,9 +495,9 @@ static void lev_load_texture_map(uw_motion *m, const uw_ark *ark, int level, con
      * (uw_scene_level) */
 }
 
-/* creature_clear_combat_flags: mobiles 2..0xff's +0x15 bit 7,
+/* creature_clear_paths: mobiles 2..0xff's +0x15 bit 7,
  * and npc_path_slot_mask to -1. */
-static void creature_clear_combat_flags(uw_motion *m) {
+static void creature_clear_paths(uw_motion *m) {
     uint16_t i;
     for (i = 2; i < 0x100; i++) m->lseg[(uint16_t)(obj_at(m, i) + 0x15)] &= 0x7f;
     ww(m->ds, NPC_PATH_SLOT_MASK, 0xffff);
@@ -518,11 +518,11 @@ int uw_motion_level_load(uw_motion *m, const uw_ark *ark, int level, const uint8
     if (r > 0) {
         lev_load_texture_map(m, ark, level, terrain, terrain_size);
         memset(ds + AUTOMAP_TILES, 0, 0x1000);                          /* automap_clear */
-        creature_clear_combat_flags(m);
+        creature_clear_paths(m);
         /* combat_state_reset */
         ds[ASSAULT_VICTIM_INDEX] = 0;
         ds[ASSAULT_VICTIM_RACE] = 0xff;
-        creature_clear_combat_flags(m);
+        creature_clear_paths(m);
         if (r == 1) {
             /* automap_block_load: slot level + 26, empty for a
              * level never visited */
@@ -533,20 +533,13 @@ int uw_motion_level_load(uw_motion *m, const uw_ark *ark, int level, const uint8
     return r;
 }
 
-int uw_motion_restore(uw_motion *m, const uint8_t *player_dat, size_t size, const uw_ark *ark,
-                      const uint8_t *terrain, size_t terrain_size) {
-    uint8_t *ds = m->ds, *ls = m->lseg;
-    uint16_t tracked = rw(ds, TRACKED_OBJECT), rec;
-    int level, i;
-    /* game_reset_player_state */
-    inventory_discard_all(m);
-    player_state_recalc(m);
-    ww(ls, (uint16_t)(tracked + 2), (uint16_t)(rw(ls, (uint16_t)(tracked + 2)) & 0xfc7f));
-    ls[(uint16_t)(tracked + 0x18)] &= 0xe0;
-    ww(ds, PLAYER_HEADING, 0);
-    ww(ds, MOVE_HEADING, 0);
-    ds[0x546] = 1;
-    /* panel_values_reset */
+/* panel_values_reset: the nine panel values and the flasks' shown
+ * levels zeroed, both dragons hidden and their phase cleared, the panel
+ * mode 0, element 7's step 0, the redraw mask's bit 7 off, and the
+ * weapon's states put back (4, 6, 6, 6, frame 0). */
+static void panel_values_reset(uw_motion *m) {
+    uint8_t *ds = m->ds;
+    int i;
     for (i = 0; i < 9; i++) {
         ds[(uint16_t)(PANEL_VALUES + i)] = 0;
         ds[(uint16_t)(PANEL_FLASK_SHOWN + i)] = 0;
@@ -564,6 +557,22 @@ int uw_motion_restore(uw_motion *m, const uint8_t *player_dat, size_t size, cons
     ds[0x795] = 6;
     ww(ds, 0x0796, 0);
     elem_flush(m);
+}
+
+int uw_motion_restore(uw_motion *m, const uint8_t *player_dat, size_t size, const uw_ark *ark,
+                      const uint8_t *terrain, size_t terrain_size) {
+    uint8_t *ds = m->ds, *ls = m->lseg;
+    uint16_t tracked = rw(ds, TRACKED_OBJECT), rec;
+    int level;
+    /* game_reset_player_state */
+    inventory_discard_all(m);
+    player_state_recalc(m);
+    ww(ls, (uint16_t)(tracked + 2), (uint16_t)(rw(ls, (uint16_t)(tracked + 2)) & 0xfc7f));
+    ls[(uint16_t)(tracked + 0x18)] &= 0xe0;
+    ww(ds, PLAYER_HEADING, 0);
+    ww(ds, MOVE_HEADING, 0);
+    ds[0x546] = 1;
+    panel_values_reset(m);
     ww(ds, 0x5702, 0);
     weapon_stow(m);
     ww(ds, 0x1a30, 2);
@@ -584,11 +593,13 @@ int uw_motion_restore(uw_motion *m, const uint8_t *player_dat, size_t size, cons
         ww(ds, ACTION_STATE_WORD, 0);
     }
     if (!savegame_read(m, player_dat, size)) return 0;
+    if (m->scroll) print_message(m, 0xaa);  /* savegame_restore_progress's "..." */
     level = rw(ds, CURRENT_LEVEL_WORD);
     if (!uw_motion_level_load(m, ark, level, terrain, terrain_size)) return 0;
     /* level_transition_effects(level, 3): level 9's byte cleared */
     if (level == 9) ds[0x546] = 0;
-    /* combat_state_save */
+    if (m->scroll) print_message(m, 0xaa);
+    /* combat_state_restore */
     rec = rw(ds, PLAYER_RECORD_PTR);
     ds[ASSAULT_VICTIM_INDEX] = ds[(uint16_t)(rec + 0xba)];
     ds[ASSAULT_VICTIM_RACE] = ds[(uint16_t)(rec + 0xbb)];
@@ -776,7 +787,7 @@ void npc_settle_level(uw_motion *m, uint16_t bp) {
 }
 
 /* level_transition_effects(level, phase): with record +0x60 bit
- * 4 set and arriving, game_world_reset(0) instead (not carried); arriving
+ * 4 set and arriving, game_world_reset(0) instead; arriving
  * resets the combat state and leaving settles the level; level 7 takes the
  * magic on the way in and gives back its maximum and a quarter on the way
  * out; level 9 swaps a byte with one in another segment, and phase 3
@@ -791,7 +802,7 @@ void level_transition_effects(uw_motion *m, int level, int phase, uint16_t bp) {
     if (phase == 0) {
         ds[ASSAULT_VICTIM_INDEX] = 0;
         ds[ASSAULT_VICTIM_RACE] = 0xff;
-        creature_clear_combat_flags(m);
+        creature_clear_paths(m);
     } else if (phase == 1) {
         npc_settle_level(m, (uint16_t)(bp - 2 - 4 - 2));
     }
@@ -1112,11 +1123,12 @@ void uw_motion_dungeon_enter(uw_motion *m, uint32_t clock) {
 
 /* game_reset_player_state: the inventory freed, the recalc, the player
  * object's word 2 bits 7..9 and +0x18 bits 0..4 cleared, the heading and
- * pitch zeroed, level 9's byte set, the panel values zeroed,
+ * pitch zeroed, level 9's byte set, panel_values_reset (the dragons, the
+ * eyes, the weapon's states),
  * game_prev_mode cleared, the weapon stowed, options_panel_active 2, the
  * action mode's cursor popped, the mode and its two pairs cleared, and a
- * held thing let go of -- or, past state 3, the camera target reset
- * (counted). */
+ * held thing let go of -- or, past state 3, the camera put back on the
+ * Avatar (debug_camera_set_target(1)). */
 static void game_reset_player_state(uw_motion *m) {
     uint8_t *ds = m->ds, *ls = m->lseg;
     uint16_t pl = rw(ds, TRACKED_OBJECT);
@@ -1128,7 +1140,7 @@ static void game_reset_player_state(uw_motion *m) {
     ww(ds, 0x727a, 0);
     ww(ds, 0x727c, 0);
     ds[0x0546] = 1;
-    memset(ds + 0x0937, 0, 9);              /* panel_values_reset: the nine panel_values */
+    panel_values_reset(m);
     ww(ds, 0x5702, 0);
     weapon_stow(m);
     ww(ds, 0x1a30, 2);
@@ -1154,7 +1166,8 @@ void uw_motion_leave_game(uw_motion *m, int show) {
     uint8_t *ds = m->ds;
     ds[0x0726] = 0;                         /* cursor_reset_bounds' countdown */
     cursor_reset_bounds(m);
-    /* input_poll until nothing is pending: the host's passes */
+    /* input_poll until nothing is pending: the host's (the shell's
+     * leave_game_begin) */
     if (show) {
         panel_set_value(m, 2, 0);
         panel_draw_compass(m);
@@ -1189,6 +1202,38 @@ void uw_motion_enter_game(uw_motion *m, uint32_t clock) {
 }
 
 
+/* The view spun into the moongate at tile (32, 32): the camera on the
+ * vortex's eye (attach_eye(3)), the distance to the gate's corner -- the
+ * square root of the squared differences, >> 6 -- and its bearing from the
+ * differences scaled by it, then 64 frames, the angle stepped by 0xccb
+ * each, the eye drawing in as the timer runs; the camera back on the
+ * Avatar. The frames are the host's (view_hook). */
+static void vortex(uw_motion *m) {
+    uint8_t *ds = m->ds;
+    int32_t xd, yd;
+    int16_t x, y;
+    uint16_t rad;
+    ds[0x3598] = ds[0x3599] = 0x20;
+    debug_camera_set_target(m, 3);
+    xd = (int16_t)(ds[0x3598] * 0x100 - rw(ds, 0x2780));
+    yd = (int16_t)(ds[0x3599] * 0x100 - rw(ds, 0x2782));
+    rad = (uint16_t)((int16_t)uw_isqrt32((uint32_t)(xd * xd + yd * yd)) >> 6);
+    ww(ds, 0x357a, rad);
+    if (!rad) {
+        UW_NOT_CARRIED(m->not_carried);
+        rad = 1;
+    }
+    x = (int16_t)((int32_t)((uint32_t)xd << 15) / ((int32_t)rad << 6));
+    y = (int16_t)((int32_t)((uint32_t)yd << 15) / ((int32_t)rad << 6));
+    ww(ds, 0x357e, (uint16_t)uw_atan2(y, x));
+    for (ww(ds, 0x357c, 0); rw(ds, 0x357c) < 0x40; ww(ds, 0x357c, (uint16_t)(rw(ds, 0x357c) + 1))) {
+        if (m->view_hook) m->view_hook(m->view_user, m, UW_VIEW_VORTEX_FRAME);
+        else UW_NOT_CARRIED(m->not_carried);
+        ww(ds, 0x357e, (uint16_t)(rw(ds, 0x357e) + 0xccb));
+    }
+    debug_camera_set_target(m, 1);
+}
+
 /* ==== game_ending_sequence ==== */
 
 void uw_motion_ending(uw_motion *m) {
@@ -1199,8 +1244,8 @@ void uw_motion_ending(uw_motion *m) {
         uint16_t o;
         uw_objpool pool;
         if (ds[(uint16_t)(rec + 0x6d)] != 0) return;
-        /* the Slasher of Veils, item 0x15a, made in tile (32, 32) for the
-         * moment of the fade: a quantity object with word 3's high bits 0xb */
+        /* a moongate, item 0x15a -- the gate the Slasher is dragged
+         * through -- made in tile (32, 32) for the moment of the fade: a quantity object with word 3's high bits 0xb */
         o = create_object(m, 0x15a, 0);
         if (o) {
             ww(ls, o, (uint16_t)(rw(ls, o) | 0x8000));
@@ -1210,7 +1255,7 @@ void uw_motion_ending(uw_motion *m) {
             pool_to_ds(m, &pool);
         }
         print_message(m, 0x117);            /* "The Slasher of Veils is dragged from this world." */
-        UW_NOT_CARRIED(m->not_carried);
+        vortex(m);
         m->screen_fade |= 1;                /* screen_fade_out(5): the view wiped */
         if (o) {
             pool_from_ds(m, &pool);

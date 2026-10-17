@@ -96,7 +96,7 @@ int  uw_palette_fade_step(uw_palette_fade *f);
 
 /* screen_fade_out and screen_fade_in push 12 and ignore the word their
  * callers pass -- perform_pending_teleport passes a variable and
- * debug_camera_preview passes 5, and neither reaches the loop. */
+ * cameras_fade passes 5, and neither reaches the loop. */
 #define UW_SCREEN_FADE_STEPS 12
 #define UW_SCREEN_FADE_CLEAR 0xf1
 

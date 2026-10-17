@@ -14,14 +14,15 @@
  * octant first -- rounding up for a right turn -- then turns 45 degrees and
  * writes the heading's octant into the tracked object's +2 bits 7..9 and its
  * top five bits into +0x18. A step is 0x80 along the heading (2: the same,
- * the fit's slope argument set), -2 0x40 backward; with water or lava under
- * foot (motion_block_flags 0x14) the slope argument is set too. The step is
- * taken when item_fits_in_tile accepts it and the support there is walkable
- * ground, the player's own movement state or, over water or lava, water:
+ * the fit's slope argument set), -2 0x40 backward; while levitating or
+ * flying (motion_spell_bits 0x14, which enchantments set) the slope
+ * argument is set too. The step is taken when item_fits_in_tile accepts it
+ * and the support there is walkable ground, the player's own movement state
+ * or, levitating or flying, the air (support 0x10: off a ledge):
  * the position written, the object relinked into a new tile and its tile
  * coordinates set, the fine position into +2, the z put on the floor unless
  * a slope-argument step leaves the Avatar eight or more above it -- then
- * falling (gravity -4) unless swimming -- the movement state from the
+ * falling (gravity -4) unless levitating or flying -- the movement state from the
  * support, the clock's top two bits into +0xb, and a spatial query at the
  * destination on the frame (BP - 0x2a) firing trigger_chain on every
  * overlapping object of item 0x1a0. */
@@ -30,7 +31,7 @@ static int player_step_or_turn(uw_motion *m, int16_t dir) {
     uint8_t *ds = m->ds, *ls = m->lseg;
     uint16_t obj = rw(ds, TRACKED_OBJECT), q = (uint16_t)(BP - 0x2a), saved;
     int16_t step, angle, x, y, tile, i, start, count;
-    uint8_t slope = 0, wet;
+    uint8_t slope = 0, flying;
     if (rw(ds, VERTICAL_GRAVITY) || rs(ds, MOVEMENT_SPEED) >= rs(ds, SPEED_MAX_ACCEL)) return 0;
     if (dir == -2) {
         step = 0x40;
@@ -54,17 +55,17 @@ static int player_step_or_turn(uw_motion *m, int16_t dir) {
         step = 0x80;
         angle = (int16_t)((int16_t)rw(ds, PLAYER_HEADING) / 0x100);
     }
-    wet = (ds[BLOCK_FLAGS] & 0x14) != 0;
+    flying = (ds[BLOCK_FLAGS] & 0x14) != 0;
     ww(ds, (uint16_t)(BP - 6), rw(ds, PLAYER_X));
     ww(ds, (uint16_t)(BP - 8), rw(ds, PLAYER_Y));
     angle_to_offset(m, (uint16_t)angle, step, (uint16_t)(BP - 6), (uint16_t)(BP - 8));
     x = rs(ds, (uint16_t)(BP - 6));
     y = rs(ds, (uint16_t)(BP - 8));
     if (!item_fits_in_tile(m, 0x7f, 1, (int16_t)(x / 0x20), (int16_t)(y / 0x20), (int16_t)(rw(ls, (uint16_t)(obj + 2)) & 0x7f),
-                           slope | wet, 8, (uint16_t)(BP - 0x28 - 4 - 14 - 4 - 2)))
+                           slope | flying, 8, (uint16_t)(BP - 0x28 - 4 - 14 - 4 - 2)))
         return 0;
     if (!(slope || rw(ds, PLACE_SUPPORT) == 1 || rw(ds, PLACE_SUPPORT) == rw(ds, MOVEMENT_STATE)
-          || (rw(ds, PLACE_SUPPORT) == 0x10 && wet)))
+          || (rw(ds, PLACE_SUPPORT) == 0x10 && flying)))
         return 0;
     ww(ds, PLAYER_X, (uint16_t)x);
     ww(ds, PLAYER_Y, (uint16_t)y);
@@ -79,10 +80,10 @@ static int player_step_or_turn(uw_motion *m, int16_t dir) {
     }
     ww(ls, (uint16_t)(obj + 2), (uint16_t)((rw(ls, (uint16_t)(obj + 2)) & 0x1fff) | ((uint16_t)(rs(ds, PLAYER_X) >> 5) << 0xd)));
     ww(ls, (uint16_t)(obj + 2), (uint16_t)((rw(ls, (uint16_t)(obj + 2)) & 0xe3ff) | (((rs(ds, PLAYER_Y) >> 5) & 7) << 10)));
-    if ((!slope && !wet) || (rs(ds, PLAYER_Z) >> 3) - 8 <= rs(ds, PLACE_FLOOR)) {
+    if ((!slope && !flying) || (rs(ds, PLAYER_Z) >> 3) - 8 <= rs(ds, PLACE_FLOOR)) {
         ww(ls, (uint16_t)(obj + 2), (uint16_t)((rw(ls, (uint16_t)(obj + 2)) & 0xff80) | (rw(ds, PLACE_FLOOR) & 0x7f)));
         ww(ds, PLAYER_Z, (uint16_t)(rw(ds, PLACE_FLOOR) << 3));
-    } else if (!rw(ds, VERTICAL_GRAVITY) && !wet) {
+    } else if (!rw(ds, VERTICAL_GRAVITY) && !flying) {
         ww(ds, VERTICAL_GRAVITY, (uint16_t)-4);
     }
     set_movement_state(m, rw(ds, PLACE_SUPPORT), 0);
@@ -683,7 +684,7 @@ void pending_action_run(uw_motion *m, uint16_t obj, int in_inventory) {
     else if (rw(m->ds, 0x2686) == 0x3b62 && rw(m->ds, 0x2684) == 0x0882) use_pole(m, obj);
     else if (rw(m->ds, 0x2686) == 0x3b62 && rw(m->ds, 0x2684) == 0x0719) use_bones(m, obj, 1);
     else if (rw(m->ds, 0x2686) == 0x3b62 && rw(m->ds, 0x2684) == 0x0a12) use_tyballs_orb(m, obj, 1);
-    else if (rw(m->ds, 0x2686) == 0x3b62 && rw(m->ds, 0x2684) == 0x08cf) use_anvil(m, obj);
+    else if (rw(m->ds, 0x2686) == 0x3b62 && rw(m->ds, 0x2684) == 0x08cf) use_anvil(m, obj, in_inventory);
     else if (rw(m->ds, 0x2686) == 0x3b62 && rw(m->ds, 0x2684) == 0x0aff) use_special_tmap_object(m, obj, 1);
     else if (rw(m->ds, 0x2686) == 0x393e && rw(m->ds, 0x2684) == 0x1560) door_and_trap_spells(m, obj);
     else UW_NOT_CARRIED(m->not_carried);

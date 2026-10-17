@@ -193,7 +193,7 @@ void uw_effect_animate(uw_effects *e, uint8_t *level, int index, int delta,
             h = ((h & 7) + delta + (h & 8)) & 0xf;
             ww(level, p, (uint16_t)((w & 0xe1ff) | (h << 9)));
             if (h & 8) {
-                if (e->door_move) e->door_move(e->door_user, e, index, delta);   /* level_effect_move */
+                if (e->door_move) e->door_move(e->door_user, e, index, delta);   /* door_closing_check */
                 else e->unsupported++;
             }
         }
@@ -244,7 +244,7 @@ void uw_effects_tick(uw_effects *e, uint8_t *level, int ticks, uw_rng *rng) {
                 expire(e, level, i, rng);
             } else {
                 uw_effect_animate(e, level, i, d, rng);
-                /* level_effect_move sets the flag when it rewrote the
+                /* door_closing_check sets the flag when it rewrote the
                  * countdown itself. */
                 if (!e->moved) e->rec[i].timer = left;
                 else e->moved = 0;

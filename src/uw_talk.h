@@ -14,8 +14,8 @@
  * such a CALLI instead, and this session keeps the state between the
  * shell's passes: `wait` says what it waits for, and uw_talk_choose or
  * uw_talk_answer resumes it. The run's end exports the variables, saves
- * the globals, and holds the screen for a click or 500 ticks when the NPC
- * spoke last; uw_talk_finish is converse_refresh and the mode's return. */
+ * the globals, and holds the screen until any input -- or 500 ticks when the
+ * player spoke last and nothing changed; uw_talk_finish is converse_refresh and the mode's return. */
 #ifndef UW_TALK_H
 #define UW_TALK_H
 
@@ -53,6 +53,7 @@ typedef struct {
     int         say_respond;       /* the stopped say is RESPOND_OP's */
     uint8_t     say_spoke;         /* who spoke, before the stopped say */
     int         menu_options;      /* the options listed at a menu */
+    uint32_t    relist_at;         /* the menu cleared by a print: when it is listed again (0 none) */
     uw_scroll_edit edit;           /* babl_ask's field (scroll_text_input) */
     long        not_carried;
 } uw_talk;
@@ -63,6 +64,10 @@ typedef struct {
  * and `scroll` are used. */
 bool uw_talk_open(uw_talk *t, uw_motion *m, const char *dir);
 void uw_talk_close(uw_talk *t);
+
+/* init_babl, which main_menu's Create Character runs every time: the
+ * globals made again from BABGLOBS.DAT, every conversation's zero. */
+void uw_talk_new_globals(uw_talk *t);
 
 /* conv_begin_with_object(obj): the guard -- a creature that talks, its slot
  * live -- else the "no response" message and false. True when the
@@ -84,8 +89,9 @@ void uw_talk_caret(uw_talk *t, int counts);
  * (cursor_y + 1)) / font height in the rows table -- or 0. */
 int  uw_talk_option_at_cursor(const uw_talk *t);
 
-/* A pass while the conversation is up: at UW_TALK_HOLD, the hold ends at
- * its clock or on `click`; at UW_TALK_MORE -- a say stopped at a pause or
+/* A pass while the conversation is up: at UW_TALK_MENU, a menu a print has
+ * cleared is listed again 500 ticks or a `click` later; at UW_TALK_HOLD,
+ * the hold ends at its clock (0: none) or on `click`; at UW_TALK_MORE -- a say stopped at a pause or
  * a [MORE] (uw_scroll's waits) -- a pause ends at its clock or on `click`,
  * a [MORE] on `click` only, and the print goes on. Returns the wait. */
 int  uw_talk_tick(uw_talk *t, uint32_t clock, int click);

@@ -398,7 +398,7 @@ void uw_motion_sound_age_slots(uw_motion *m) {
 
 /* What the host sets when it has a driver to give, as sound_init leaves
  * the data segment with one configured: the music driver's id, the handle
- * ail_install_driver gave (the first, 0), and the four flags as the data
+ * ail_register_driver gave (the first, 0), and the four flags as the data
  * image holds them -- both available, both enabled -- which a failed
  * sound_init would have cleared and the port's boot clears. The sequence
  * handle keeps the image's 0, which names no sequence until load_xmi

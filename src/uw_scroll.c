@@ -143,7 +143,7 @@ static int wait_click_or_timeout(uw_scroll *s, int show) {
     } else {
         ds[WINDOW_DIRTY] = 1;
         if (ds[CURSOR_OVER] && show) uw_motion_cursor_show(s->m);
-        if (s->stop_at_wait) {
+        if (s->stop_at_wait || s->hold_waits) {
             s->stopped = 1;
             return 0;
         }
@@ -387,6 +387,20 @@ static void print_segments(uw_scroll *s, char *str, uint16_t flag, const char *b
     emit_lines(s, di, flag, buf);
 }
 
+/* scroll_print's opening: the cursor hidden over the window, a pending
+ * clear done (not in the NPC's window), the lines before [MORE] reset. */
+static void print_prologue(uw_scroll *s) {
+    uint8_t *ds = s->m->ds;
+    check_cursor(s);
+    if (ds[CURSOR_OVER]) uw_motion_cursor_hide(s->m);
+    if (ds[CLEAR_PENDING] && rw(ds, WINDOW_MODE) != 1) {
+        ds[CLEAR_PENDING] = 0;
+        uw_scroll_clear(s, 0);
+    }
+    ww(ds, LINES_BEFORE_MORE, (uint16_t)wfield(s, W_LINES));
+    ds[WINDOW_DIRTY] = 0;
+}
+
 int16_t uw_scroll_print(uw_scroll *s, const char *text) {
     uint8_t *ds = s->m->ds;
     static char local[0x32];    /* the print's 49-byte buffer and its terminator */
@@ -395,17 +409,15 @@ int16_t uw_scroll_print(uw_scroll *s, const char *text) {
     size_t left;
     if (mode != 1 && mode != 4) return -1;
     if (!window(s)) { UW_NOT_CARRIED(s->not_carried); return -1; }
-    s->stopped = 0;
-    if (!s->resumed) {
-        check_cursor(s);
-        if (ds[CURSOR_OVER]) uw_motion_cursor_hide(s->m);
-        if (ds[CLEAR_PENDING] && rw(ds, WINDOW_MODE) != 1) {
-            ds[CLEAR_PENDING] = 0;
-            uw_scroll_clear(s, 0);
-        }
-        ww(ds, LINES_BEFORE_MORE, (uint16_t)wfield(s, W_LINES));
-        ds[WINDOW_DIRTY] = 0;
+    if (s->stopped && s->hold_waits) {
+        /* a print while one waits: the original's caller would be inside
+         * that wait still, so this one runs after it, whole */
+        s->insert_at = s->npending;
+        push_pending(s, 5, text, 0);
+        return -1;
     }
+    s->stopped = 0;
+    if (!s->resumed) print_prologue(s);
     s->colour = ds[(uint16_t)(window(s) + W_COLOUR)];
     s->npending = 0;
     s->insert_at = 0;
@@ -479,6 +491,12 @@ int uw_scroll_resume(uw_scroll *s) {
         case 0: emit(s, text, flag, text); break;
         case 1: emit_lines(s, text, flag, text); break;
         case 2: print_segments(s, text, flag, text); break;
+        case 5:
+            /* a later print, queued behind the wait: its own opening */
+            print_prologue(s);
+            s->colour = ds[(uint16_t)(window(s) + W_COLOUR)];
+            print_chunks(s, text);
+            break;
         default: print_chunks(s, text); break;
         }
         if (s->stopped) return 0;

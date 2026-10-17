@@ -16,7 +16,7 @@ enum {
     AM_ORIGIN_X = 10,       /* the tile grid, three pixels a tile */
     AM_ORIGIN_Y = 7,
     AM_SLOT     = 26,       /* the automap block: level + 26 */
-    AM_NOTES    = 36,       /* the note block: level + 36 */
+    AM_NOTES    = 0x23,     /* the note block: level + 0x23 */
     AM_NOTE_LEN = 0x36,     /* 50 bytes of text, then x and y */
     AM_MARKER   = 0x103f    /* the player's marker */
 };
@@ -290,8 +290,8 @@ static void render(uw_automap *a, int level) {
 
 /* automap_show_level(level): the level's own marks into
  * automap_tiles -- the archive's block, empty for a level never entered --
- * and the screen again. The notes of the level shown would be saved first;
- * the port writes none, so there are none to save. */
+ * and the screen again, the notes of the level shown saved first
+ * (automap_notes_save). */
 /* automap_clear and automap_block_load(level): the level's marks from the
  * archive into the data segment's map. */
 static void block_load(uw_automap *a, int level) {
@@ -322,8 +322,10 @@ bool uw_automap_open(uw_automap *a, uw_motion *m, const char *dir, uw_ark *ark) 
     a->blank = uw_read_file(path);
     snprintf(path, sizeof path, "%s/DATA/FONTBIG.SYS", dir);
     a->font_big = uw_read_file(path);
-    snprintf(path, sizeof path, "%s/DATA/FONT5X6P.SYS", dir);
+    snprintf(path, sizeof path, "%s/DATA/FONT4X5P.SYS", dir);
     a->font_small = uw_read_file(path);
+    snprintf(path, sizeof path, "%s/DATA/FONT5X6P.SYS", dir);
+    a->font_cur = uw_read_file(path);
     if (!a->blank.data || a->blank.size < 64000) {
         uw_automap_close(a);
         return false;
@@ -336,10 +338,21 @@ bool uw_automap_open(uw_automap *a, uw_motion *m, const char *dir, uw_ark *ark) 
         && !uw_ark_write_block(a->ark, a->level_shown + AM_SLOT, m->ds + AM_TILES, 0x1000))
         UW_NOT_CARRIED(a->not_carried);
     render(a, a->level_shown);
+    /* automap_draw's pointer: kept off the map's left border and its foot,
+     * and the map's own shape */
+    uw_motion_cursor_bounds(m, 0x16, 7, 0x13f, 0xc7);
+    uw_motion_cursor_hide(m);
+    uw_motion_cursor_shape_push(m, 0x1078);
+    uw_motion_cursor_show(m);
     return true;
 }
 
 void uw_automap_close(uw_automap *a) {
+    /* automap_refresh_save: the cursor hidden and the map's shape popped,
+     * the notes saved, ... the bounds the whole screen and the cursor
+     * shown */
+    uw_motion_cursor_hide(a->m);
+    uw_motion_cursor_shape_pop(a->m, 0);
     notes_save(a, a->level_shown);        /* automap_refresh_save's persist */
     /* and the current level's marks back when another level's were shown,
      * or the walk goes on marking -- and the next save
@@ -349,6 +362,9 @@ void uw_automap_close(uw_automap *a) {
     uw_free(&a->blank);
     uw_free(&a->font_big);
     uw_free(&a->font_small);
+    uw_free(&a->font_cur);
+    uw_motion_cursor_reset_bounds(a->m);
+    uw_motion_cursor_show(a->m);
     a->active = 0;
 }
 
@@ -358,6 +374,14 @@ void uw_automap_close(uw_automap *a) {
  * 0x2d); a backspace takes one back and puts the parchment over
  * what it drew; Return, Escape and a mouse button alike end it, which keeps
  * a note with a first character. */
+/* The caret: the pointer put at the typed text's end -- curx, the note's
+ * x less one plus the text's width -- ten right and 0x12 up from the click's
+ * row, after every key. */
+static void caret(uw_automap *a) {
+    int w = a->font_small.data ? uw_motion_string_width(a->font_small.data, a->font_small.size, a->typed) : 0;
+    uw_motion_cursor_move_to(a->m, (int16_t)(a->note_x - 1 + w + 10), (int16_t)(a->note_y - 4 + 0x12));
+}
+
 static void automap_key_typed(uw_automap *a, uint16_t code) {
     int w;
     if (!a->editing) {
@@ -365,6 +389,8 @@ static void automap_key_typed(uw_automap *a, uint16_t code) {
         return;
     }
     if (code == 0x0d || code == 0x1b) {
+        int16_t curx = (int16_t)(a->note_x - 1 + (a->font_small.data
+                       ? uw_motion_string_width(a->font_small.data, a->font_small.size, a->typed) : 0));
         if (a->typed[0]) {
             uw_map_note *r = &a->note[a->nnotes++];
             snprintf(r->text, sizeof r->text, "%s", a->typed);
@@ -373,7 +399,11 @@ static void automap_key_typed(uw_automap *a, uint16_t code) {
             a->notes_dirty = 1;
         }
         a->editing = 0;
+        uw_motion_cursor_hide(a->m);       /* mouse_hide, which the pop's show ends */
         draw_notes(a);                     /* the notes again, not the map */
+        /* the pointer left past the note's end, and the map's shape back */
+        uw_motion_cursor_move_to(a->m, (int16_t)(curx + 0x16), (int16_t)(a->note_y - 4 + 7));
+        uw_motion_cursor_shape_pop(a->m, 2);
         return;
     }
     if (code >= 0x20 && code <= 0x7a) {
@@ -383,50 +413,57 @@ static void automap_key_typed(uw_automap *a, uint16_t code) {
         if (!a->font_small.data) { UW_NOT_CARRIED(a->not_carried); return; }
         w = uw_motion_string_width(a->font_small.data, a->font_small.size, a->typed)
             + uw_motion_string_width(a->font_small.data, a->font_small.size, one);
-        if (a->note_x + w > 0x13b) return;         /* sound 0x12c, and nothing kept */
-        if (a->typed_len >= 0x2e) return;
+        /* refused, do_beep(0x12c, 10): 300 Hz on the speaker for 10 ms */
+        if (a->note_x + w > 0x13b || a->typed_len >= 0x2e) { a->beeps++; caret(a); return; }
         a->typed[a->typed_len++] = one[0];
         a->typed[a->typed_len] = 0;
     } else if (code == 8) {
-        if (!a->typed_len) return;
+        if (!a->typed_len) { caret(a); return; }
         w = a->font_small.data ? uw_motion_string_width(a->font_small.data, a->font_small.size, a->typed) : 0;
         a->typed[--a->typed_len] = 0;
         /* the fill in colour 0x106 over what was drawn: the parchment back */
         restore(a, a->note_x, a->note_y, a->note_x + w, a->note_y - 6);
     } else {
+        caret(a);
         return;
     }
+    caret(a);
     if (a->font_small.data)
         uw_motion_draw_string(a->m, a->font_small.data, a->font_small.size, a->typed,
                               a->note_x, a->note_y, 0x2d);
 }
 
 /* automap_nearest_note: whichever of two notes is closer to a
- * point, by |x + width/2 - px| and |y - 2 - py| taken separately -- the
- * second wins only when it is closer on BOTH. */
+ * point, by |x + width/2 - px| (the width FONT5X6P's: delete_note_at) and |y - 2 - py| taken separately -- the
+ * second wins when it is closer in y, or else when it is closer in x. */
 static int nearer_note(uw_automap *a, int i, int j, int px, int py) {
     int wi, wj, dxi, dyi, dxj, dyj;
     if (i < 0) return j;
     if (j < 0) return i;
-    wi = a->font_small.data ? uw_motion_string_width(a->font_small.data, a->font_small.size, a->note[i].text) : 0;
-    wj = a->font_small.data ? uw_motion_string_width(a->font_small.data, a->font_small.size, a->note[j].text) : 0;
+    wi = a->font_cur.data ? uw_motion_string_width(a->font_cur.data, a->font_cur.size, a->note[i].text) : 0;
+    wj = a->font_cur.data ? uw_motion_string_width(a->font_cur.data, a->font_cur.size, a->note[j].text) : 0;
     dxi = a->note[i].x + wi / 2 - px; if (dxi < 0) dxi = -dxi;
     dyi = a->note[i].y - 2 - py;      if (dyi < 0) dyi = -dyi;
     dxj = a->note[j].x + wj / 2 - px; if (dxj < 0) dxj = -dxj;
     dyj = a->note[j].y - 2 - py;      if (dyj < 0) dyj = -dyj;
-    return (dxj < dxi && dyj < dyi) ? j : i;
+    return (dyj < dyi || dxj < dxi) ? j : i;
 }
 
 /* The delete's second click: every note whose text box holds the point
  * folded through automap_nearest_note, and the closest marked deleted --
- * its x set negative for automap_notes_save to compact away. */
+ * its x set negative for automap_notes_save to compact away. The search
+ * takes the records already marked too, and the text stays, so a click
+ * at the left edge can erase a marked note again. The widths -- the hit
+ * box, the nearest's middle, the parchment put back -- are FONT5X6P's,
+ * the font every path through 808b leaves loaded (the editor's end 0ba1,
+ * the notes' redisplay 0e2f, the render 10c2) and the erase (0bf7..0d44)
+ * does not change, though the notes are drawn in FONT4X5P. */
 static void delete_note_at(uw_automap *a, int px, int py) {
     int i, best = -1;
     a->deleting = 0;
     for (i = 0; i < a->nnotes; i++) {
         int w;
-        if (a->note[i].x < 0) continue;
-        w = a->font_small.data ? uw_motion_string_width(a->font_small.data, a->font_small.size, a->note[i].text) : 0;
+        w = a->font_cur.data ? uw_motion_string_width(a->font_cur.data, a->font_cur.size, a->note[i].text) : 0;
         if (px < a->note[i].x || px > a->note[i].x + w) continue;
         if (py > a->note[i].y || py < a->note[i].y - 5) continue;
         best = nearer_note(a, best, i, px, py);
@@ -434,11 +471,10 @@ static void delete_note_at(uw_automap *a, int px, int py) {
     if (best < 0) return;
     a->notes_dirty = 1;
     {   /* the note's own rectangle back from the parchment */
-        int w = a->font_small.data
-              ? uw_motion_string_width(a->font_small.data, a->font_small.size, a->note[best].text) : 0;
+        int w = a->font_cur.data
+              ? uw_motion_string_width(a->font_cur.data, a->font_cur.size, a->note[best].text) : 0;
         restore(a, a->note[best].x, a->note[best].y, a->note[best].x + w, a->note[best].y - 5);
     }
-    a->note[best].text[0] = 0;
     if (best == a->nnotes - 1) a->nnotes--;   /* the last record is simply dropped */
     else a->note[best].x = -1;                /* else the marker notes_save compacts away */
     draw_notes(a);
@@ -469,10 +505,27 @@ static void automap_click_at(uw_automap *a, int16_t x, int16_t y) {
     if (a->editing) { automap_key_typed(a, 0x0d); return; }
     /* the delete's click is read raw (cursor_get_pos_raw), and
      * the notes stand at their stored x and y on the screen */
-    if (a->deleting) { delete_note_at(a, x, y); return; }
+    if (a->deleting) {
+        /* the erase's wait over (a left click: the caller's): the bounds
+         * the map's again, the eraser popped, the note under the click */
+        uw_motion_cursor_bounds(a->m, 0x16, 7, 0x13f, 0xc7);
+        uw_motion_cursor_shape_pop(a->m, 1);
+        delete_note_at(a, x, y);
+        uw_motion_cursor_show(a->m);
+        return;
+    }
     if (ex > 0x104 && ex < 0x140) {
         if (ey > 0x13 && ey < 0x33) { a->leave = 1; return; }
-        if (ey > 0x33 && ey < 0x52) { a->deleting = 1; return; }
+        if (ey > 0x33 && ey < 0x52) {
+            /* ERASE: the whole screen, the eraser 0x1079, and a wait for a
+             * left click alone */
+            uw_motion_cursor_bounds(a->m, 0, 0, 0x13f, 0xc7);
+            uw_motion_cursor_hide(a->m);
+            uw_motion_cursor_shape_push(a->m, 0x1079);
+            uw_motion_cursor_show(a->m);
+            a->deleting = 1;
+            return;
+        }
     }
     if (ex > 0x113 && ex < 0x140) {
         if (ey > 0xb7 && ey < 0xc7) {
@@ -484,13 +537,21 @@ static void automap_click_at(uw_automap *a, int16_t x, int16_t y) {
             return;
         }
     }
-    /* a new note, unless the hundred are used up */
-    if (a->nnotes >= UW_MAP_NOTES) return;
+    /* a new note, unless the hundred are used up -- then only the end's
+     * pop, of the map's own shape, and its move to a caret never set */
+    if (a->nnotes >= UW_MAP_NOTES) {
+        UW_NOT_CARRIED(a->not_carried);
+        uw_motion_cursor_hide(a->m);
+        uw_motion_cursor_shape_pop(a->m, 2);
+        return;
+    }
     a->editing = 1;
     a->typed_len = 0;
     a->typed[0] = 0;
     a->note_x = (int16_t)ex;
     a->note_y = (int16_t)(ey + 4);
+    uw_motion_cursor_shape_push(a->m, 0x107a);   /* the pen */
+    caret(a);
 }
 
 void uw_automap_click(uw_automap *a, int16_t x, int16_t y) {

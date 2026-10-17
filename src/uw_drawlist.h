@@ -15,12 +15,10 @@
  *
  * WHAT IT COVERS. Every opcode the shipped lists use,
  * the rotate set rast_select_rotate_set installs, the near-wall subdivision,
- * both texture mappers and the lighting pass over them. Three opcodes --
- * emit_sprite (0x3a), emit_creature (0x5a) and automap_mark (0xb0) -- and
- * the shaded untextured faces reach paths outside this module (the sprite
- * blitter, the creature pager, the automap, rast_draw_shaded), and are
- * COUNTED AND SKIPPED rather than guessed at, so a frame comparison can say
- * what it did not draw.
+ * both texture mappers and the lighting pass over them, the sprites and
+ * creatures and the shaded untextured faces. One opcode, automap_mark (0xb0)
+ * -- do_mouseq, the mouse serviced mid-frame -- is the host's: COUNTED AND
+ * SKIPPED, the shell polling once after the draw.
  *
  * TWO COORDINATE ORDERS LIVE IN THIS INSTRUCTION SET, and they are not the
  * same one twice. A VERTEX's three list words are x, z, y -- the fetch

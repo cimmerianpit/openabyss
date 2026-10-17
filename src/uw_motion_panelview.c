@@ -42,7 +42,7 @@ enum {
     HEIGHT_PCT     = 0x088c,   /* panel_flip_height_pct, eight words */
     EMS_PAGES      = 0x089c,   /* the three handles: work, new, old */
     PAGES_TRIED    = 0x094a,   /* panel_ems_pages_tried */
-    SWITCH_DIR     = 0x18a4,   /* panel_switch_direction */
+    SWITCH_DIR     = 0x18a4,   /* paperdoll_flip_page */
     SCRATCH_CURSOR = 0x010c,   /* ems_scratch_page_cursor */
     STATS_RIGHT    = 0x138,    /* every number on the stats panel is right-aligned here */
     STATS_LEFT     = 0xf2
@@ -259,7 +259,8 @@ void rune_shelf_clear(uw_motion *m) {
 }
 
 /* rune_bag_add(obj): a rune stone put into the bag -- item ids
- * 0xe8 through 0xe8 + 0x18, twenty-four of them -- sets its bit in the
+ * 0xe8 through 0xe8 + 0x18 by the range test, twenty-five of them, one past
+ * the twenty-four runes (the original's off-by-one) -- sets its bit in the
  * record's +0x44..+0x46, most significant first, and frees the object. 0
  * for anything else, which is what makes the caller say only runes go in
  * the rune bag. */
@@ -534,7 +535,7 @@ static void panel_flip_scale_blit(uw_motion *m, const uint8_t *src, uint8_t *dst
  * screen does not show it -- its background out of PANELS.GR into the new
  * page, the edge-on card into the work page at 0x2800, the background
  * blitted onto the other page, the target's drawer run there with
- * panel_mode the target and panel_switch_direction 0, and the finished
+ * panel_mode the target and paperdoll_flip_page 0, and the finished
  * panel read back into the new page -- and the target recorded. */
 void panel_view_switch_begin(uw_motion *m, uint8_t target) {
     uint8_t *ds = m->ds;

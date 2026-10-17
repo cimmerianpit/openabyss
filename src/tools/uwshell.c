@@ -62,6 +62,7 @@
  * release, or the live mask while a button stays down. */
 #include "uwshell.h"
 #include "../uw_gamedir.h"
+#include "../uw_trig.h"
 #include <SDL3/SDL_main.h>     /* main as the entry point on every platform, WinMain included */
 
 #include <sys/stat.h>
@@ -294,6 +295,9 @@ static void scene_camera(uw_motion *m) {
     uw_scene_sway(sc, ds[0x3578], (int16_t)rw(ds, 0x3580), (int16_t)rw(ds, 0x3582), (int16_t)rw(ds, 0x3584),
                   (int16_t)rw(ds, 0x3586));
     memcpy(sc->ds + 0x3588, ds + 0x3588, 4);
+    /* the automap's switch (level 9 and the crystal ball turn it off):
+     * automap_mark_tile writes a tile's code only while it is set */
+    sc->ds[0x546] = ds[0x546];
     /* camera_follow_ptr: on the Avatar, the scene's own Avatar; null, the
      * free camera (Roaming Sight's), its angles and position with it */
     if (rw(ds, 0x2e10) | rw(ds, 0x2e12)) {
@@ -309,7 +313,6 @@ static const uint8_t *pick_map(void *user, uint8_t *ds) {
     static uint16_t rows320[200], rows174[200];
     uw_motion *m = user;
     uw_fb f;
-    uint16_t count;
     int i;
     if (!scene_at(m)) return NULL;
     for (i = 0; i < 200; i++) { rows320[i] = (uint16_t)(i * 320); rows174[i] = (uint16_t)(2 + i * 174); }
@@ -319,8 +322,10 @@ static const uint8_t *pick_map(void *user, uint8_t *ds) {
     memset(map, 0, sizeof map);
     f.pixels = map; f.size = sizeof map; f.row = rows174; f.n_rows = 114;
     if (uw_scene_pick(sc, &f) < 0) return NULL;
-    count = rw(sc->ds, 0x311e);
-    for (i = 0; i < count && i < 0xc0; i++) {
+    /* the pick tables whole, 0xc0 entries each: one data segment in the
+     * original, so a colour past the count still names what an earlier
+     * frame left there */
+    for (i = 0; i < 0xc0; i++) {
         memcpy(ds + 0x2e1c + 2 * i, sc->ds + 0x2e1c + 2 * i, 2);
         memcpy(ds + 0x2f9c + 2 * i, sc->ds + 0x2f9c + 2 * i, 2);
     }
@@ -578,7 +583,8 @@ static int usage(void) {
             strcmp(UW_GAME_DIR_FALLBACK, ".") ? ", else " : "", strcmp(UW_GAME_DIR_FALLBACK, ".") ? UW_GAME_DIR_FALLBACK : "");
     fprintf(stderr,
                     "The window: --scale N, --fullscreen (Alt-Enter toggles), --square for square pixels (4:3 is the\n"
-                    "default, as a VGA monitor showed 320x200), --no-vsync, --pace MS for a pass's least length (8).\n");
+                    "default, as a VGA monitor showed 320x200), --no-vsync, --pace MS for a pass's least length (8;\n"
+                    "a dungeon pass at least nine ticks of the game's clock, the original's frame).\n");
     return 2;
 }
 
@@ -869,6 +875,7 @@ static void host_events(uw_shell *sh) {
                         sh->relative = 1;
                         sh->drag_fx = sh->drag_fy = 0;
                     }
+                    sh->mouse_mask |= mask;
                     m->buttons |= mask;
                     sh->input_edge |= 2;
                     /* the cursor interrupt's click latch */
@@ -878,6 +885,7 @@ static void host_events(uw_shell *sh) {
                         ww(ds, 0x0115, mask);
                     }
                 } else {
+                    sh->mouse_mask &= (uint16_t)~mask;
                     m->buttons &= (uint16_t)~mask;
                     if (sh->relative && !m->buttons) {
                         float wx, wy;
@@ -892,6 +900,22 @@ static void host_events(uw_shell *sh) {
         }
     }
     harness_events_done(sh);
+    /* mouse_btns: with no mouse button down, keypad 0 (scan code 0x52, Ins)
+     * is the left button and keypad . (0x53, Del) the right -- the
+     * original's keyboard play; a press latched as the interrupt's would */
+    if (!sh->mouse_mask) {
+        uint16_t state = rw(ds, 0x2344);
+        uint16_t kp = (uint16_t)((keybuf[(uint16_t)(state + 0x52)] ? 1 : 0) | (keybuf[(uint16_t)(state + 0x53)] ? 2 : 0));
+        if (kp & ~m->buttons) {
+            sh->input_edge |= 2;
+            if (rw(ds, 0x0115) == 0xffff) {
+                ww(ds, 0x0117, rw(ds, 0x010e));
+                ww(ds, 0x0119, rw(ds, 0x0110));
+                ww(ds, 0x0115, (uint16_t)(kp & ~m->buttons));
+            }
+        }
+        m->buttons = kp;
+    }
     /* cursor_update_position with the mouse still: the keyboard's glide,
      * and the host's pointer put where it took the cursor, so the mouse
      * goes on from there as the original's deltas would */
@@ -1124,7 +1148,112 @@ static void options_pass(uw_shell *sh) {
 }
 
 /* An overlay took the pass, or none is up. */
+/* The motion core's views from inside a call (uw_motion.view_hook).
+ *
+ * cameras_fade, the crystal ball's: the view drawn at the ball's shade, the
+ * camera detached (attach_eye(-1), the free camera the ball set), the view
+ * faded out and in on it, held while a mouse button is down
+ * (mouse_release(1)), drawn again and faded out, the camera on the Avatar
+ * again, and faded in. The hold shows a still. */
+/* A vortex frame: the eye from the vortex's state -- the bearing's sine
+ * and cosine / 0x100, drawn in by (0x40 - timer) / 0x40, times the radius
+ * / 2 in 16 bits, about the gate's corner plus 0x80; the height the
+ * Avatar's eye less the timer * 2; the heading the bearing + 0x7fff, no
+ * pitch, the roll the timer << 11 -- drawn and shown. The port's view
+ * takes it as the free camera, which is put back after. */
+static void view_hook(void *user, uw_motion *m, int kind) {
+    uw_shell *sh = user;
+    uint8_t *ds = m->ds;
+    const uint8_t *light = sc ? sc->light : NULL;
+    if (kind == UW_VIEW_CAMERAS_FADE) {
+        /* view_rebuild_and_draw first: the Avatar's own view at the shade
+         * crystal_ball just set, which the fade out starts from */
+        refresh_view(m); sh->renders++;
+        ww(ds, 0x2e10, 0); ww(ds, 0x2e12, 0);
+        screen_fade_run(m, 1, light, sh->pal, sh->frame, sh->tex, sh->ren);
+        refresh_view(m); sh->renders++;
+        screen_fade_run(m, 0, light, sh->pal, sh->frame, sh->tex, sh->ren);
+        trace_line(sh, "the crystal ball's view, held while a button is down");
+        while (m->buttons && sh->running) {
+            if (sh->script) m->clock += 4;
+            else m->clock = sh->clock0 + (uint32_t)((SDL_GetTicksNS() - sh->t0) * 256 / 1000000000ull);
+            host_events(sh);
+            show(m->screen, sh->pal, sh->frame, sh->tex, sh->ren);
+            if (!sh->script) SDL_DelayNS(8000000);
+        }
+        /* the far view drawn again before it fades */
+        refresh_view(m); sh->renders++;
+        screen_fade_run(m, 1, light, sh->pal, sh->frame, sh->tex, sh->ren);
+        /* attach_eye(1): the camera on the Avatar, event 2 */
+        memcpy(ds + 0x2e10, ds + 0x7274, 4);
+        ww(ds, 0x56aa, (uint16_t)(rw(ds, 0x56aa) | 2));
+        refresh_view(m); sh->renders++;
+        screen_fade_run(m, 0, light, sh->pal, sh->frame, sh->tex, sh->ren);
+    } else if (kind == UW_VIEW_VORTEX_FRAME) {
+        uint8_t saved[16], ptr[4];
+        int16_t s, c, x, y, timer = (int16_t)rw(ds, 0x357c), rad = (int16_t)rw(ds, 0x357a);
+        uint16_t theta = rw(ds, 0x357e);
+        memcpy(saved, ds + 0x358c, 12);
+        memcpy(ptr, ds + 0x2e10, 4);
+        uw_sincos_lerp(theta, &s, &c);
+        x = (int16_t)(s / 0x100);
+        y = (int16_t)(c / 0x100);
+        x = (int16_t)(x * (0x40 - timer) / 0x40);
+        y = (int16_t)(y * (0x40 - timer) / 0x40);
+        ww(ds, 0x3592, (uint16_t)((ds[0x3598] << 8) + (int16_t)(x * rad) / 2 + 0x80));
+        ww(ds, 0x3594, (uint16_t)((ds[0x3599] << 8) + (int16_t)(y * rad) / 2 + 0x80));
+        ww(ds, 0x3596, (uint16_t)(rw(ds, 0x2784) + 0xa4 - timer * 2));
+        ww(ds, 0x358c, (uint16_t)(theta + 0x7fff));
+        ww(ds, 0x358e, 0);
+        ww(ds, 0x3590, (uint16_t)(timer << 11));
+        ww(ds, 0x2e10, 0); ww(ds, 0x2e12, 0);
+        refresh_view(m); sh->renders++;
+        show(m->screen, sh->pal, sh->frame, sh->tex, sh->ren);
+        harness_vortex_frame(sh, timer);
+        memcpy(ds + 0x358c, saved, 12);
+        memcpy(ds + 0x2e10, ptr, 4);
+    }
+}
+
+/* do_beep(hz, ms): sound(hz), delay(ms), nosound() -- the PC speaker's own
+ * tone, whatever UW.CFG's drivers, the program's one direct use of it. A
+ * square wave mixed into the output for its length; the 10 ms delay is the
+ * host's. */
+static void speaker_beep(uw_shell *sh, int hz, int ms) {
+    sh->beep_left = (long)UW_OPL_RATE * ms / 1000;
+    sh->beep_step = (double)hz / UW_OPL_RATE;
+    sh->beep_phase = 0;
+    trace_line(sh, "speaker beep %d Hz, %d ms", hz, ms);
+}
+
+/* A dungeon print stopped at its wait -- a \P or \p pause (200 or 600
+ * ticks) or a [MORE] (no timeout) -- holds the game as the original's
+ * scroll_wait does, inside the print: nothing runs until the input
+ * changes or the pause is over, then the print goes on, and the prints
+ * made behind it (src/uw_scroll.c's hold_waits). */
+static void scroll_wait_pass(uw_shell *sh) {
+    uw_motion *m = &sh->m;
+    uw_scroll *s = &sh->scroll;
+    uint16_t code;
+    int input = 0;
+    if (!sh->scroll_wait_until && !sh->scroll_wait_set) {
+        sh->scroll_wait_set = 1;
+        sh->scroll_wait_until = s->stop_kind == 1 ? m->clock + 200 : s->stop_kind == 2 ? m->clock + 600 : 0;
+        trace_line(sh, "the scroll waits (kind %d)", s->stop_kind);
+    }
+    if (click_taken(sh)) input = 1;
+    if (keyboard_read_press(m, sh->keybuf, &code)) input = 1;
+    sh->passes++;
+    /* the timeout's `ja`: the clock past the end, not at it */
+    if (!input && !(sh->scroll_wait_until && (int32_t)(m->clock - sh->scroll_wait_until) > 0)) return;
+    sh->scroll_wait_set = 0;
+    sh->scroll_wait_until = 0;
+    if (!uw_scroll_resume(s)) trace_line(sh, "the scroll waits again");
+}
+
 static int modal_pass(uw_shell *sh) {
+    sh->scroll.hold_waits = sh->mode == MODE_DUNGEON;
+    if (sh->mode == MODE_DUNGEON && sh->scroll.stopped) { scroll_wait_pass(sh); return 1; }
     if (sh->m.stack_ask) { stack_ask_pass(sh); return 1; }
     if (sh->m.mantra_ask) { mantra_pass(sh); return 1; }
     if (sh->m.yesno_ask) { yesno_pass(sh); return 1; }
@@ -1434,17 +1563,56 @@ static void map_pass(uw_shell *sh) {
     uw_automap *a = &sh->map;
     uint16_t code, index;
     int key;
+    if (sh->map_release) {
+        /* the erase's closing mouse_release(1): the press taken, nothing
+         * more until the button is up */
+        ww(sh->ds, 0x0115, 0xffff);
+        sh->ds[0x011d] = 0;
+        sh->passes++;
+        if (m->buttons) return;
+        sh->map_release = 0;
+        return;
+    }
+    if (a->deleting) {
+        /* the erase's `while (mouse_get_input() != 1)`, which polls the
+         * input alone (no music): keys and the right button read and thrown
+         * away; the left PRESS ends it -- input_poll answers the held mask
+         * -- and the note under the cursor then is erased at once */
+        (void)keyboard_read_press(m, sh->keybuf, &code);
+        if (rw(sh->ds, 0x0115) == 2 && !m->buttons) { ww(sh->ds, 0x0115, 0xffff); sh->ds[0x011d] = 0; }
+        if (m->buttons == 1) {
+            trace_line(sh, "map erase at %d,%d", cursor_x(sh), cursor_y(sh));
+            uw_automap_click(a, cursor_x(sh), cursor_y(sh));
+            sh->map_release = 1;
+        }
+        sh->passes++;
+        return;
+    }
     uw_motion_music_restart(m);                             /* automap_tick's */
     /* a note being typed is automap_click's own input_poll loop; the map's
      * Escape otherwise is input_tick's */
-    if (a->editing) key = keyboard_read_press(m, sh->keybuf, &code);
+    if (a->deleting) key = 0;
+    else if (a->editing) key = keyboard_read_press(m, sh->keybuf, &code);
     else if ((key = keyboard_read_held(m, sh->keybuf, &code, &index)) != 0) key_taken(sh, index);
-    if (key) {
-        trace_line(sh, "map key %04x", code);
-        uw_automap_key(a, code);
-    } else if (click_taken(sh)) {
-        trace_line(sh, "map click at %d,%d", cursor_x(sh), cursor_y(sh));
-        uw_automap_click(a, cursor_x(sh), cursor_y(sh));
+    {
+        int16_t cx = cursor_x(sh), cy = cursor_y(sh);
+        if (key) {
+            trace_line(sh, "map key %04x", code);
+            uw_automap_key(a, code);
+            if (a->beeps) { speaker_beep(sh, 300, 10); a->beeps = 0; }
+        } else if (click_taken(sh)) {
+            trace_line(sh, "map click at %d,%d", cursor_x(sh), cursor_y(sh));
+            uw_automap_click(a, cursor_x(sh), cursor_y(sh));
+        }
+        /* the note's caret moved the cursor (mouse_putxy), which reads the
+         * driver's motion and drops it, so the mouse goes on from the
+         * caret: the host's pointer put there too, or its next motion would
+         * pull the cursor back under it */
+        if ((cursor_x(sh) != cx || cursor_y(sh) != cy) && !sh->script && sh->win && sh->ren) {
+            float wx, wy;
+            if (SDL_RenderCoordinatesToWindow(sh->ren, (float)cursor_x(sh), logical_y((float)(199 - cursor_y(sh))), &wx, &wy))
+                SDL_WarpMouseInWindow(sh->win, wx, wy);
+        }
     }
     if (a->leave) set_mode(sh, MODE_DUNGEON);
     sh->passes++;
@@ -1517,8 +1685,22 @@ static void conv_pass(uw_shell *sh) {
      * digits 1..4 and the menu window's rows (conv_menu_choose, which sets
      * menu_choose for below), Escape (a no-op), the trade table's slots
      * (src/uw_motion_barter.c) and the inventory panel -- and the waits
-     * those begin */
+     * those begin. Each pass loop_music_maybe first (conv_menu_run's) */
     sh->passes++;
+    /* conv_menu_run's loop_music_maybe, once a time round its loop: not
+     * inside the relist's scroll_wait, which never polls the music */
+    if (!t->relist_at) uw_motion_music_restart(m);
+    if (t->wait == UW_TALK_MENU && !m->ds[0x0a8e] && !sh->waiting && !m->buttons) {
+        /* a print cleared the menu: scroll_wait(500, 0) -- any input or the
+         * ticks -- and the options listed again (uw_talk_tick); not while a
+         * handler's own wait (a release, a drag) is still going on, which
+         * the original finishes before its loop comes round */
+        int click = 0;
+        if (click_taken(sh)) click = 1;
+        if (keyboard_read_press(m, sh->keybuf, &code)) click = 1;
+        uw_talk_tick(t, m->clock, click);
+        if (!m->ds[0x0a8e]) return;
+    }
     input_tick_pass(sh);
     /* conv_menu_choose, asked for by a digit key or the menu window's
      * hotspot: the option, or the one under the cursor */
@@ -1598,6 +1780,10 @@ static void chargen_leave(uw_shell *sh) {
         if (!uw_ark_open(&sh->ark, path) || !uw_motion_level_load(m, &sh->ark, 1, sh->terrain.data, sh->terrain.size))
             UW_NOT_CARRIED(m->not_carried);
     }
+    /* Create Character's init_babl, after the archive's copy: every
+     * conversation's globals zero again (MAINMENU.C:217-231 in the
+     * reference) -- after a game they would hold the last game's */
+    if (sh->chargen_from_menu) uw_talk_new_globals(&sh->talk);
     {
         /* the finish leaves the count at zero -- the boot's own are the
          * boot's -- but the program's since the boot (the title, the menu)
@@ -1743,7 +1929,13 @@ static void cutscene_pass(uw_shell *sh) {
         cut_effects(sh);
         if (r == UW_CUT_VOICE) cut_voice(sh);
         else if (r == UW_CUT_SILENT) trace_line(sh, "voice ended");
-        else if (r == UW_CUT_ENDED) { set_mode(sh, sh->prev_mode); break; }
+        else if (r == UW_CUT_ENDED) {
+            /* in the view the working palette is the game's, and the file's
+             * colour cycles (anm_cycle) leave it rotated */
+            if (!c->full_screen) memcpy(sh->pal, c->dac, 768);
+            set_mode(sh, sh->prev_mode);
+            break;
+        }
     }
     cut_effects(sh);
     sh->passes++;
@@ -1942,8 +2134,9 @@ static void dungeon_from_menu(uw_shell *sh) {
         uw_motion_enter_game(&sh->m, sh->m.clock);
         /* and what the left game's calls still owed, now that
          * game_return_to_menu returns into them: options_click_row's
-         * cursor_show, when the death came inside a restore */
-        for (; sh->options.show_owed > 0; sh->options.show_owed--) uw_motion_cursor_show(&sh->m);
+         * cursor_show and its release wait, when the death came inside
+         * a restore */
+        uw_options_pay_owed(&sh->options);
     } else {
         ww(ds, 0x565e, 1);
         ww(ds, 0x5664, 0);
@@ -1967,12 +2160,24 @@ static void dungeon_from_menu(uw_shell *sh) {
  * MODE_LEAVING, whose pass is the rest: the palette copied and faded out
  * over 2 and main_menu(0), the menu again with no introduction. The way
  * back is dungeon_from_menu, with the enter handler this time. */
-static void leave_game_begin(uw_shell *sh) {
+/* real_death's `while (mouse_get_input() > -1)`: every key and
+ * the latched click drained -- and, since input_poll answers the held mask
+ * while a button is down, every button let go of -- before anything else
+ * runs, so none shortens the death's cutscene. 1 when it is over. */
+static int leave_game_drain(uw_shell *sh) {
     uw_motion *m = &sh->m;
-    int show = m->return_to_menu == 2;
-    m->return_to_menu = 0;
-    sh->leave_show = show;
-    trace_line(sh, "game_return_to_menu(%d)", show);
+    uint16_t code;
+    while (keyboard_read_press(m, sh->keybuf, &code)) { }
+    ww(sh->ds, 0x0115, 0xffff);
+    sh->ds[0x011d] = 0;
+    sh->input_edge = 0;
+    sh->esc_edge = 0;
+    return !m->buttons;
+}
+
+static void leave_game_go(uw_shell *sh) {
+    uw_motion *m = &sh->m;
+    int show = sh->leave_show;
     uw_motion_leave_game(m, show);
     sh->mode = MODE_LEAVING;
     if (show) {
@@ -1980,6 +2185,25 @@ static void leave_game_begin(uw_shell *sh) {
         uw_motion_cutscene_request(m, 0x103);
         cutscene_enter(sh);
     }
+}
+
+static void leave_game_begin(uw_shell *sh) {
+    uw_motion *m = &sh->m;
+    int show = m->return_to_menu == 2;
+    m->return_to_menu = 0;
+    sh->leave_show = show;
+    trace_line(sh, "game_return_to_menu(%d)", show);
+    if (leave_game_drain(sh)) { leave_game_go(sh); return; }
+    trace_line(sh, "game_return_to_menu waits for the buttons");
+    sh->mode = MODE_DRAINING;
+}
+
+/* the drain's later passes: nothing else runs until the buttons are up */
+static void draining_pass(uw_shell *sh) {
+    sh->passes++;
+    if (!leave_game_drain(sh)) return;
+    leave_game_go(sh);
+    if (sh->mode == MODE_CUTSCENE) cutscene_present(sh);
 }
 
 static void leaving_pass(uw_shell *sh) {
@@ -2176,6 +2400,15 @@ static void title_pass(uw_shell *sh) {
         break;
     case 4:
         if (m->clock - sh->clock0 < title_at(sh, TITLE_AT, 2)) break;
+        {
+            /* titlescr's `while (mouse_get_input() > 3)`: the keys pressed
+             * over the presentation screens read and thrown away, so none
+             * skips or advances the title */
+            uint16_t code;
+            while (keyboard_read_press(m, sh->keybuf, &code)) { }
+            sh->input_edge &= ~1;
+            sh->esc_edge = 0;
+        }
         uw_motion_cutscene_request(m, 9);                   /* play_title_cutscene */
         sh->title_step = 5;
         break;
@@ -2215,6 +2448,7 @@ static const uw_shell_mode modes[] = {
     { MODE_TITLE,    "game_main",    title_pass,    NULL,           NULL },
     { MODE_LEAVING,  "leaving",      leaving_pass,  NULL,           NULL },
     { MODE_ENDING,   "ending",       ending_pass,   NULL,           NULL },
+    { MODE_DRAINING, "draining",     draining_pass, NULL,           NULL },
     { MODE_NONE,     "none",         none_pass,     NULL,           NULL },
 };
 
@@ -2305,11 +2539,19 @@ static void present(uw_shell *sh) {
 
 /* The pass's pace: the original ran its passes flat out; this paces them
  * at eight milliseconds, two ticks, so an idle game is idle. A scripted
- * run ends with its script. */
+ * run ends with its script.
+ *
+ * The dungeon's passes are held to nine ticks of the 256 Hz clock, the
+ * original's own frame on its reference machine: movement integrates once a frame
+ * and rounds its step, so a shorter frame loses slow moves towards +x and
+ * +y -- at two ticks a backward walk covered 1023 where nine-tick frames
+ * cover 1366. A scripted run keeps its four ticks a pass. */
+#define DUNGEON_FRAME_NS (9ull * 1000000000ull / 256)
 static void pace(uw_shell *sh) {
     if (!sh->script) {
         uint64_t now = SDL_GetTicksNS();
         uint64_t least = (uint64_t)present_pace_ms * 1000000ull;
+        if (sh->mode == MODE_DUNGEON && least < DUNGEON_FRAME_NS) least = DUNGEON_FRAME_NS;
         if (now - sh->pass_start < least) SDL_DelayNS(least - (now - sh->pass_start));
         sh->pass_start = SDL_GetTicksNS();
     } else if (harness_script_over(sh)) {
@@ -2430,6 +2672,12 @@ static void sound_render(uw_shell *sh, int n) {
         sh->dc_x = x;
         sh->dc_y = y;
         if (sh->voice && sh->voice_pos + i < sh->voice_len) y += sh->voice[sh->voice_pos + i];
+        if (sh->beep_left > 0) {
+            y += sh->beep_phase < 0.5 ? 6000 : -6000;
+            sh->beep_phase += sh->beep_step;
+            if (sh->beep_phase >= 1) sh->beep_phase -= 1;
+            sh->beep_left--;
+        }
         buf[i] = (int16_t)(y > 32767 ? 32767 : y < -32768 ? -32768 : y);
     }
     if (sh->audio) SDL_PutAudioStreamData(sh->audio, buf, n * 2);
@@ -2744,6 +2992,8 @@ int main(int argc, char **argv) {
     m->panel_ems = panel_ems;
     m->pick_map = pick_map;
     m->pick_user = m;
+    m->view_hook = view_hook;
+    m->view_user = sh;
     {
         static const char *const f1000[3] = { "BUTTONS.GR", "CURSORS.GR", "3DWIN.GR" };
         static const char *const fobj[1] = { "OBJECTS.GR" };

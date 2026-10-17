@@ -9,6 +9,15 @@ OpenAbyss is made and tested against **the GOG release** of Ultima
 Underworld; other releases may work, and are untested -- the program says
 so when it meets one, and a report of how it went is welcome.
 
+Since I first published this attempt at a port, better projects have
+popped up in the Underworld reversing community. I'll still maintain this 
+as a hobby and as a way for myself to understand the original source.
+
+For a byte-matching source and port please check out abedegno's
+Underworld Exhumed.
+
+https://github.com/abedegno/underworld-exhumed/
+
 ## Getting it
 
 **Windows and Linux builds** are on the releases page: a zip for Windows

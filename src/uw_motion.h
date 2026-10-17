@@ -21,7 +21,7 @@ struct uw_bank;
 
 struct uw_scroll;
 
-typedef struct {
+typedef struct uw_motion {
     uint8_t *ds;             /* 6aac, 64K */
     uint8_t *lseg;           /* the level segment, 64K (tiles at +4) */
     const uint8_t *keys;     /* the segment input_key_state's far pointers
@@ -38,8 +38,9 @@ typedef struct {
     uint8_t *ext;            /* the pathfinder's segments: 64K from runtime
                               * paragraph 5e01 (the line walk's step buffer),
                               * the path pool at +0x100, the search's two
-                              * frontiers at +0x2c0 and +0x340; NULL when
-                              * not captured */
+                              * frontiers at +0x2c0 and +0x340, atk_charge's
+                              * wind-up table at +0x3c0 (the image's; the
+                              * boot loads it); NULL when not captured */
     uint8_t *grid;           /* pathfind_between_tiles' node grid, 0x5000
                               * bytes (runtime 476f). It clears the grid
                               * before a search and the renderer's work
@@ -106,6 +107,7 @@ typedef struct {
                               * saved from the viewport */
     long     pixels_not_drawn; /* draws and restores the port does not make */
     uint8_t  span_variant;   /* gfx_span_variant: gr_draw_art skips colour 0 */
+    uint8_t  clip_foot;      /* the cursor's blit: its window clip keeps the screen's last line out */
     const uint8_t *font_small; /* FONT4X5P.SYS, which the inventory's stack
                               * counts are drawn in; NULL when not given */
     size_t   font_small_size;
@@ -162,7 +164,7 @@ typedef struct {
         int      masks;      /* view_effect_warp: `mask` into the six texture
                               * records' masks (record i's word +6) */
         uint16_t mask[6];
-        int      shade;      /* shade_reload_or_blank: 1 the ramp blanked, 2
+        int      shade;      /* shade_reload_or_scramble: 1 the ramp blanked, 2
                               * reloaded from the file (a light-level change
                               * into or out of 5 reloads too) */
         int      floors;     /* apply_maze_texture: the floor textures again,
@@ -183,6 +185,15 @@ typedef struct {
                               * bottom), its writes to `ds` made; NULL when
                               * not given */
     void    *pick_user;
+    void   (*view_hook)(void *user, struct uw_motion *m, int kind);
+                             /* the host's views from inside a call, drawn
+                             * and shown before it returns: kind
+                             * UW_VIEW_CAMERAS_FADE (cameras_fade: the view
+                             * faded over to the free camera, held while a
+                             * button is down, faded back) and
+                             * UW_VIEW_VORTEX_FRAME (establish_view with the
+                             * vortex's eye); NULL: not shown, counted */
+    void    *view_user;
     uint16_t view_wait;      /* the return address a view action's release
                               * wait begun in the pair stands at, for its end
                               * (uw_motion_view_wait_end); 0 none */
@@ -313,6 +324,8 @@ typedef struct {
     uint16_t delay_ticks;    /* delay_ticks(n) a handler ran: the host lets that
                               * many ticks pass after the pass */
 } uw_motion;
+
+enum { UW_VIEW_CAMERAS_FADE = 1, UW_VIEW_VORTEX_FRAME = 2 };
 
 /* dungeon_frame_tick: the clock since the last frame's stamp, capped at 0x40
  * ticks; the turn phase and the effect ticks from its 16- and 64-tick
@@ -473,10 +486,21 @@ int  uw_motion_inventory_remove_quantity(uw_motion *m, uint16_t obj, int16_t cou
 /* imgbuf_restore(handle): the rectangle the saved-image heap
  * records for the handle put back from its save area. */
 void uw_motion_imgbuf_restore(uw_motion *m, uint16_t handle);
+void uw_motion_cursor_shape_push(uw_motion *m, uint16_t shape);
+void uw_motion_cursor_shape_pop(uw_motion *m, uint16_t flags);
+/* cursor_set_bounds(x0, y0, x1, y1) and cursor_reset_bounds (the whole
+ * screen); cursor_move_to(x, y), mouse_putxy, unclamped */
+void uw_motion_cursor_bounds(uw_motion *m, int16_t x0, int16_t y0, int16_t x1, int16_t y1);
+void uw_motion_cursor_reset_bounds(uw_motion *m);
+void uw_motion_cursor_move_to(uw_motion *m, int16_t x, int16_t y);
 /* imgbuf_alloc(w, h): a saved-image record, its handle; and
  * imgbuf_capture(handle, x, y, w, h): the screen rectangle
  * (y its bottom row, up) saved into it. */
 uint16_t uw_motion_imgbuf_alloc(uw_motion *m, uint16_t w, uint16_t h);
+/* imgbuf_free(handle): the record freed, merged with its free neighbours,
+ * the block at the top given back; 1 for an unknown handle, 0 after a
+ * merge, the handle when nothing merged. */
+uint16_t uw_motion_imgbuf_free(uw_motion *m, uint16_t handle);
 void     uw_motion_imgbuf_capture(uw_motion *m, uint16_t handle, int x, int y, int w, int h);
 /* view_present after the draw list has run: the viewport
  * `view` (172 x 113 in a 320-wide buffer, row 0 the view's bottom) and `mask`,
@@ -583,7 +607,7 @@ int uw_motion_level_load(uw_motion *m, const uw_ark *ark, int level, const uint8
 /* savegame_restore_progress once SAVEn is copied into SAVE0:
  * game_reset_player_state, savegame_read of PLAYER.DAT's bytes -- the record
  * decoded and applied, the inventory unpacked -- level_load of the level it
- * names, level_transition_effects(level, 3) and combat_state_save. 1 on
+ * names, level_transition_effects(level, 3) and combat_state_restore. 1 on
  * success. */
 int uw_motion_restore(uw_motion *m, const uint8_t *player_dat, size_t size, const uw_ark *ark,
                       const uint8_t *terrain, size_t terrain_size);
@@ -633,7 +657,10 @@ void uw_motion_gr_draw_art(uw_motion *m, uint16_t art, int x, int y);
 void uw_motion_dungeon_refresh_inventory(uw_motion *m);
 /* gfx_draw_string(str, x, y) in `font` (a .SYS file's bytes or
  * the in-memory font: the 12-byte header, then a glyph record a character)
- * and `colour`, into the screen when there is one; at most 0x84 characters. */
+ * and `colour`, into the screen when there is one; at most 0x84 characters.
+ * Nothing is drawn unless the text's top and bottom rows and its left edge
+ * are on the screen (the right end is not tested), and a character outside
+ * 0x20..0x7a is drawn, and advances, as '?'. */
 void uw_motion_draw_string(uw_motion *m, const uint8_t *font, size_t font_size, const char *str, int x, int y,
                            uint8_t colour);
 /* gfx_blit(x, y, src, h, w, 0, 0): `w` columns of `h` rows of an

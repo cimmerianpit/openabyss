@@ -37,6 +37,9 @@ typedef struct {
      * state still holds. */
     char         line[0x800];
     uw_scroll   *scroll;       /* the text windows the lines print to; NULL, not printed */
+    /* babl_display: the listed options' texts, which converse_event_loop
+     * prints again when a print has cleared the menu */
+    char         menu_text[16][0xa0];
 } uw_convbi;
 
 /* The builtin `name` for a VM stopped at its CALLI: its result, and *ported
@@ -77,6 +80,13 @@ void uw_convbi_menu_echo(uw_convbi *b, uw_convvm *vm, uint16_t string_id);
  * the rows each takes recorded, and the menu flags. `top` is
  * the CALLI's argument slot. */
 void uw_convbi_menu_prints(uw_convbi *b, uw_convvm *vm, uint16_t *top, int fmenu);
+
+/* conv_menu_run, when a print has cleared menus_active while
+ * the menu waits -- a look at the trade table or the pack: after its
+ * scroll_wait (the caller's), the menu window cleared and each option
+ * again as "N. text\n" from babl_display's copies, the scroll selected,
+ * the flag set. The rows' table is left as the listing made it. */
+void uw_convbi_menu_relist(uw_convbi *b);
 
 /* conv_export_npc_vars, what conv_start does when the run ends:
  * the talker's variables written back into its object and the player's into

@@ -23,6 +23,9 @@ static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t
 void uw_ail_init(uw_ail *a, const uw_ail_synth *synth) {
     /* each cached controller's value at reset */
     static const uint8_t defaults[9] = { 0x7f, 0, 0x40, 0x7f, 0, 0, 0, 0, 0 };
+    /* the program each channel is sent after its bend, 0xff none: the
+     * MT-32's own instruments, which every driver's build carries */
+    static const uint8_t programs[10] = { 0xff, 0x44, 0x30, 0x5f, 0x4e, 0x29, 0x03, 0x6e, 0x7a, 0xff };
     int i, ch;
     memset(a, 0, sizeof *a);
     if (synth) a->synth = *synth;
@@ -39,6 +42,10 @@ void uw_ail_init(uw_ail *a, const uw_ail_synth *synth) {
         a->cache_bend_lsb[ch] = 0;
         a->cache_bend_msb[ch] = 0x40;
         emit(a, (uint8_t)(0xe0 | ch), 0, 0x40);
+        if (programs[ch] != 0xff) {
+            a->cache_program[ch] = programs[ch];
+            emit(a, (uint8_t)(0xc0 | ch), programs[ch], 0);
+        }
     }
 }
 

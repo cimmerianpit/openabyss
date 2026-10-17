@@ -7,7 +7,7 @@
 #include "uw_motion_int.h"
 
 /* look_at_texture(kind, surface): for kind 2 and a surface, "You
- * see ", the name in string block 0x14 -- a wall's by
+ * see ", the name in string block 10 (| 0x1400 is block 10's id) -- a wall's by
  * wall_texture_assign, a floor's 0x1fe less its texture word, anything else
  * 0x1ff -- and the sentence's ending; otherwise message kind + 0x98. */
 /* The scenery's text: a prefix from string block 8 (none when `prefix` is

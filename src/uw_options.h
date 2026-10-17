@@ -69,6 +69,10 @@ void uw_options_caret(uw_options *o, int counts);
 /* A click at the cursor (screen x, y with y up) while the panel is up. */
 void uw_options_click(uw_options *o, int16_t x, int16_t y, uint32_t clock);
 
+/* What a click whose handler died owes once the game is entered again:
+ * options_click_row's cursor_show and its release wait, `show_owed` times. */
+void uw_options_pay_owed(uw_options *o);
+
 /* savegame_restore_progress(slot) as the title screen's Journey Onward runs
  * it (main_menu_save_list): the slot's files over SAVE0's and the game
  * rebuilt, then weapons_load_colourmap and main_menu's weapon_stow -- not

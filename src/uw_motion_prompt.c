@@ -46,7 +46,7 @@ static void chain_reset_identification(uw_motion *m, uint16_t o) {
     }
 }
 
-/* run_code_on_all_objects, whose one callback -- the far
+/* level_reset_identification, whose one callback -- the far
  * pointer it pushes, stub 15 of 69c8 -- is obj_reset_identification:
  * every tile of the 64 by 64 map with a chain, the chain walked. */
 static void run_code_on_all_objects_reset_identification(uw_motion *m) {
@@ -65,7 +65,7 @@ static void run_code_on_all_objects_reset_identification(uw_motion *m) {
  * otherwise +1, a further +1 when the attribute index is non-zero and the
  * skill is still under half the attribute, and while the skill is under
  * the attribute one more with probability (attribute - skill) / divisor,
- * capped at 30. Skill 8, Lore: run_code_on_all_objects with
+ * capped at 30. Skill 8, Lore: level_reset_identification with
  * obj_reset_identification -- what lies in the level to be identified
  * again -- and, under level 9, the record's per-level byte at +0xc2 takes
  * the new Lore. */
@@ -419,11 +419,15 @@ void uw_motion_cutscene_finished(uw_motion *m) {
     if (then == 1) item_repair_finish(m, m->prompt_obj, m->prompt_skill);
 }
 
-/* use_anvil(obj, hit, flag), the anvil's pending handler: the
+/* use_anvil(obj, how, in_inventory), the anvil's pending handler. It
+ * does nothing unless both flags are set, and the view passes
+ * in_inventory 0, so the anvil repairs only what is clicked in the
+ * pack; the view's caller then drops the cursor itself. Otherwise the
  * cursor's shape popped, the hand emptied and action_state 0, then
  * item_repair(obj, the record's Repair skill (+0x2f), verbose). */
-void use_anvil(uw_motion *m, uint16_t obj) {
+void use_anvil(uw_motion *m, uint16_t obj, int in_inventory) {
     uint8_t *ds = m->ds;
+    if (!in_inventory) return;
     cursor_shape_pop(m, 3);
     ww(ds, CURSOR_OBJECT, 0);
     ww(ds, (uint16_t)(CURSOR_OBJECT + 2), 0);

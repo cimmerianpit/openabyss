@@ -199,9 +199,9 @@ static int object_damage(uw_motion *m, uint16_t obj, uint16_t attacker, int16_t 
 
 /* object_damage_debris(obj, attacker, type, x, y): what a thing that broke becomes. A
  * mobile one (x under 0) is left, 1. A door (class 0x14) is opened when shut
- * and its lock removed, a locked chest (0x15b, 0x15d) unlocked and opened,
- * a container (class 8) emptied unless object_cull_test(10) keeps it -- the
- * three counted; object_damage never breaks a door. Anything else: fire
+ * and its lock removed, a barrel or a chest (0x15b, 0x15d) unlocked and opened,
+ * a container (class 8) emptied unless object_cull_test(10) keeps it;
+ * object_damage never breaks a door. Anything else: fire
  * (type bit 3) on debris already (0xd5, 0xd6) takes it out of its tile
  * chain -- object_detach, object_remove of the chain not
  * forced, 1 when that removed it -- and on the rest one time in four
@@ -212,9 +212,9 @@ static int object_damage(uw_motion *m, uint16_t obj, uint16_t attacker, int16_t 
  * 0xd5 + rand() * 2 / 0x8000 -- 0xd5 or 0xd6 by rand() >= 0x4000; it goes
  * into word 0, and a static thing is placed over the spatial query on
  * placed_object_collision's frame, 0x18 below this one (obj, x, y, 1) -- 1
- * when that removed it and the id was 0, never; 0. The frame is the
+ * when that removed it, the thing having left the map; else 0. The frame is the
  * caller's to name (`debris_bp`, damage_objects_in_tile's chain); without
- * it the placement is counted. flame2: the explosions the flame wind made
+ * it a frame of the port's stands in. flame2: the explosions the flame wind made
  * burn in their own fire. */
 static int object_damage_debris(uw_motion *m, uint16_t obj, uint16_t attacker, uint8_t type, int16_t x, int16_t y) {
     uint8_t *ls = m->lseg, *ds = m->ds;
@@ -233,7 +233,7 @@ static int object_damage_debris(uw_motion *m, uint16_t obj, uint16_t attacker, u
         door_lock_remove(m, obj, 1);
         debris = -1;
     } else if (id == 0x15d || id == 0x15b) {
-        /* a locked chest or a lock: the first lock removed and the chest
+        /* a barrel or a chest: the first lock removed and the container
          * opened where it stands (open_container(0, obj, 0)) */
         ww(ds, ACTION_TARGET_TILE_X, (uint16_t)x);
         ww(ds, ACTION_TARGET_TILE_Y, (uint16_t)y);
@@ -269,7 +269,7 @@ static int object_damage_debris(uw_motion *m, uint16_t obj, uint16_t attacker, u
             /* placed_object_collision(obj, x, y, 1) 0x18 under the caller's
              * frame -- a frame of the port's when the caller names none */
             if (placed_object_collision(m, obj, (uint16_t)x, (uint16_t)y, 1,
-                                        (uint16_t)((m->debris_bp ? m->debris_bp : (uint16_t)(FRAME_BP - 0x80)) - 0x18)) == 0 && id == 0)
+                                        (uint16_t)((m->debris_bp ? m->debris_bp : (uint16_t)(FRAME_BP - 0x80)) - 0x18)) == 0)
                 return 1;
         }
     }
@@ -439,7 +439,8 @@ static int16_t pick_target_from_query(uw_motion *m, uint16_t q) {
  * of them, until the terrain test blocks (corner flags 0x300); there a
  * static `some_damage` (item 0x1cb) goes at the point, eight above its z,
  * with a level effect of 2 -- freed when the effect list is full -- at the
- * end of its tile's chain. The sound is output. `bp` is its frame. */
+ * end of its tile's chain. When the Avatar swung, sound effect 7 plays at
+ * the point first. `bp` is its frame. */
 static void combat_mark_wall(uw_motion *m, uint16_t heading, int16_t reach, uint16_t q, uint16_t bp) {
     uint8_t *ds = m->ds, *ls = m->lseg;
     int16_t steps = (int16_t)(reach + 1), tx, ty;
@@ -465,6 +466,7 @@ static void combat_mark_wall(uw_motion *m, uint16_t heading, int16_t reach, uint
     tx = (int16_t)(rs(ds, q) >> 3);
     ty = (int16_t)(rs(ds, (uint16_t)(q + 2)) >> 3);
     ww(ls, (uint16_t)(o + 2), (uint16_t)((rw(ls, (uint16_t)(o + 2)) & 0xff80) | ((rw(ds, (uint16_t)(q + 4)) + 8) & 0x7f)));
+    if (rw(ds, COMBAT_ATTACKER_OBJ) == 1) play_sound_effect_at_xy(m, 7, rs(ds, q), rs(ds, (uint16_t)(q + 2)), 0);
     if (level_effect_add(m, obj_index_of(m, o), 2, 0, (uint8_t)tx, (uint8_t)ty) == -1) {
         pool_from_ds(m, &pool);
         uw_obj_free(&pool, o);
@@ -1180,7 +1182,7 @@ int item_enchantment(uw_motion *m, uint16_t o, int16_t *effect, int16_t *magnitu
 
 /* combat_damage_calc(row, obj, cell): the player's attack
  * context. The row's +6 names the skill (2..5, else 2: unarmed); the
- * rating is attack / 2 + that skill + level / 7, and 7 more with rec +0xb4;
+ * rating is attack / 2 + that skill + dexterity / 7, and 7 more with rec +0xb4;
  * the damage for a fist is unarmed * 2 / 5 + strength / 6 + 4, for a weapon
  * its row's entry for the swing kind + strength / 9. An enchanted weapon --
  * item_enchantment, which may roll for a spent linked spell -- of the plain

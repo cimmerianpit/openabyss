@@ -92,7 +92,7 @@ typedef struct {
     uw_dl    dl;
     int      drawn;                        /* frames drawn since uw_scene_level */
     int      ever_drawn;                   /* a frame drawn on any level: the executor has a past */
-    int      shade_blank;                  /* shade_reload_or_blank(1): the ramp's first two
+    int      shade_blank;                  /* shade_reload_or_scramble(1): the ramp's first two
                                             * bytes a row zeroed until it is read again */
     long     unsupported;                  /* what a stage reported not carrying */
 } uw_scene;
@@ -132,7 +132,7 @@ void uw_scene_place(uw_scene *s, uint16_t x, uint16_t y, uint16_t z,
  * eye's height, heading, pitch and roll. uw_scene_place clears them. */
 /* What the game asks of the renderer outside the data segment (uw_motion's
  * `render`): view_effect_warp's six texture masks into the rasteriser's
- * slot records (the word at +6 of each); shade_reload_or_blank -- 1 the
+ * slot records (the word at +6 of each); shade_reload_or_scramble -- 1 the
  * ramp's first two bytes of each of its sixteen rows zeroed, 0 read again
  * from the file; and apply_maze_texture's reload of the floor textures
  * from floor_texture_assign's ten words. */

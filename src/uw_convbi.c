@@ -441,14 +441,26 @@ void uw_convbi_end_barter(uw_convbi *b) {
     uint8_t *ds = b->ds;
     int si;
     if (!b->level) { UW_NOT_CARRIED(b->not_carried); return; }
+    uw_motion_cursor_hide(b->level);
     for (si = 0; si < 4; si++) {
         int16_t p = (int16_t)rw(ds, (uint16_t)(0x486a + si * 2)), n = (int16_t)rw(ds, (uint16_t)(NPC_SLOTS + si * 2));
         /* The frame's address for the scratch squares: the conversation's
-         * refresh runs from the game's pass, whose stack sits near 0x9580. */
-        if (p > 0)
+         * refresh runs from the game's pass, whose stack sits near 0x9580.
+         * Each occupied slot's background put back. */
+        if (p > 0) {
             uw_motion_object_place_at_own_coords(b->level, rw(ds, PLAYER_OBJECT_PTR), uw_motion_obj_at(b->level, (uint16_t)p), 5, 0, 0x9540);
-        if (n > 0)
+            uw_motion_imgbuf_restore(b->level, rw(ds, (uint16_t)(0x48b6 + si * 2)));
+        }
+        if (n > 0) {
             uw_motion_object_place_at_own_coords(b->level, rw(ds, TALKER_PTR), uw_motion_obj_at(b->level, (uint16_t)n), 5, 0, 0x9540);
+            uw_motion_imgbuf_restore(b->level, rw(ds, (uint16_t)(0x489e + si * 2)));
+        }
+    }
+    uw_motion_cursor_show(b->level);
+    /* the eight buffers barter_setup took, given back */
+    for (si = 0; si < 4; si++) {
+        (void)uw_motion_imgbuf_free(b->level, rw(ds, (uint16_t)(0x48b6 + si * 2)));
+        (void)uw_motion_imgbuf_free(b->level, rw(ds, (uint16_t)(0x489e + si * 2)));
     }
 }
 
@@ -556,10 +568,26 @@ void uw_convbi_menu_prints(uw_convbi *b, uw_convvm *vm, uint16_t *top, int fmenu
             for (; (int16_t)row <= last; row++) ww(b->ds, (uint16_t)(0x495e + row * 2), k);
             row = (uint16_t)(last + 1);
         }
+        snprintf(b->menu_text[k], sizeof b->menu_text[k], "%s", texts[k]);
         free_expansion(texts[k], raws[k]);
     }
     if (b->scroll) uw_scroll_select_scroll(b->scroll);
     ww(b->ds, 0x4954, 1);
+    b->ds[0x0a8e] = 1;
+}
+
+void uw_convbi_menu_relist(uw_convbi *b) {
+    char line[0xa0 + 8];
+    int16_t k;
+    if (b->scroll) {
+        uw_scroll_select_conv_menu(b->scroll);
+        uw_scroll_clear(b->scroll, 1);
+    }
+    for (k = 1; k < (int16_t)rw(b->ds, 0x4a2c) && k < 16; k++) {
+        snprintf(line, sizeof line, "%c. %s\n", (char)('0' + k), b->menu_text[k]);
+        if (b->scroll) (void)uw_scroll_print(b->scroll, line);
+    }
+    if (b->scroll) uw_scroll_select_scroll(b->scroll);
     b->ds[0x0a8e] = 1;
 }
 
@@ -785,16 +813,19 @@ static int16_t bi_show_inv(uw_convbi *b, uw_convvm *vm, uint16_t *top) {
 }
 
 /* barter_give_slot_item_to_npc(idx): the object into the
- * talker's inventory, and every player slot holding that index emptied. AX is
- * ems_frame_remap's. */
+ * talker's inventory, and every player slot holding that index emptied --
+ * its saved background restored, slot and flag cleared and its mark
+ * drawn. AX is ems_frame_remap's. */
 static int16_t barter_give_slot_item_to_npc(uw_convbi *b, uint16_t idx) {
     uint8_t *ds = b->ds;
     int si;
     barter_add_to_npc_inventory(b, uw_motion_obj_at(b->level, idx));
     for (si = 0; si < 4; si++) {
         if (rw(ds, (uint16_t)(PLAYER_SLOTS + si * 2)) != idx) continue;
+        slot_background_restore(b, rw(ds, (uint16_t)(0x48b6 + si * 2)));
         ww(ds, (uint16_t)(PLAYER_SLOTS + si * 2), 0);
         ds[(uint16_t)(PLAYER_SLOT_OFFERED + si)] = 0;
+        draw_slot_frame(b, 1, si);
     }
     return ems_frame_remap(b);
 }
@@ -1266,8 +1297,9 @@ static int16_t bi_do_judgement(uw_convbi *b, uw_convvm *vm, uint16_t *top) {
     return ems_frame_remap(b);
 }
 
-/* print(string): the string expanded and printed between two
- * quote marks in the NPC's window -- the interface's. AX, which CALLI
+/* print(string): the string expanded and printed in the NPC's
+ * window between the colour escapes \2 and \0 (and a newline) -- the
+ * interface's. AX, which CALLI
  * stores, is the expansion's segment: the text's own when there was nothing
  * to expand (the ring's, for a STRINGS.PAK string), farheap_free's when a
  * copy was freed, which depends on the far heap's blocks and is counted.
@@ -1292,7 +1324,7 @@ static int16_t bi_print(uw_convbi *b, uw_convvm *vm, uint16_t *top) {
  * talker's inventory that is `what` -- an item id below 1000, or 1000 plus
  * item id >> 4 -- taken out of the chain (unlinked from the talker's +6) and
  * put on the cursor when the player can carry it (held_object_ptr,
- * action_state 1; the cursor's shape is the interface's): 1.
+ * the cursor's shape pushed, action_state 1): 1.
  * Too heavy, it goes into the first empty player-side trade slot (its flag and cached words reset; 1), else the talker drops it (2 or 3). 0
  * when nothing is held and nothing matched, or something is held. */
 static int16_t barter_take_matching(uw_convbi *b, int16_t what, int by_index) {
@@ -1312,7 +1344,12 @@ static int16_t barter_take_matching(uw_convbi *b, int16_t what, int by_index) {
         if (uw_motion_inventory_can_carry(b->level, o) & 0xff) {
             ww(ds, 0x5b06, o);
             ww(ds, 0x5b08, rw(ds, 0x3122));   /* the level segment's own */
+            /* cursor_hide, cursor_shape_push(the item), action_state 1,
+             * cursor_show */
+            uw_motion_cursor_hide(b->level);
+            uw_motion_cursor_shape_push(b->level, (uint16_t)(rw(ls, o) & 0x1ff));
             ww(ds, 0x26ac, 1);
+            uw_motion_cursor_show(b->level);
             return 1;
         }
         for (si = 0; si < 4; si++) {
@@ -1759,7 +1796,7 @@ void uw_convbi_draw_screen(uw_convbi *b, const char *data_dir) {
     uw_motion_fill_rect(m, 0x34, 0x98, 0xdc, 0x98, 0xf1);
     ds[0x4902] = ds[0x0784];                /* the panel shown, saved; the inventory's now */
     ds[0x0784] = 0;
-    ds[0x18a4] = 0;                         /* panel_switch_direction: drawn where it stands */
+    ds[0x18a4] = 0;                         /* paperdoll_flip_page: drawn where it stands */
     uw_motion_dungeon_refresh_inventory(m);
     ds[0x18a4] = 1;
 }

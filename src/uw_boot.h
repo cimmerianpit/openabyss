@@ -138,7 +138,7 @@ void uw_chargen_keep(uw_motion *m);
 bool uw_boot_draw_main_screen(uw_motion *m, const char *dir);
 
 /* DATA/UW.CFG as snd_read_cfg reads it, "%d %d %x %d" a line:
- * the music driver's id and its I/O port, IRQ and DMA, then the digital
+ * the music driver's id and its IRQ, I/O port and DMA, then the digital
  * driver's. The ids index the driver tables in the data segment -- music 1
  * pcspkr, 2 adlib, 3 sbfm, 4 sbpfm, 5 pasfm, 6 mt32mpu; digital 1 sbdig,
  * 2 sbpdig, 3 pasdig -- and 0 is none; the shipped file, not yet through

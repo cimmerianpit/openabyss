@@ -154,7 +154,8 @@ void elem_set_top_crop(uw_motion *m, uint16_t h, uint8_t rows) {
 /* elem_flush, from the instructions: nothing unless something
  * is dirty. Groups 3, 2 and 1 (never 0), front to back: a dirty element with
  * nothing saved under it drops bit 2, any other has its background restored;
- * one to be freed drops bit 0 (and its buffer goes back to the heap). Then
+ * one to be freed drops bit 0 (its buffer's free is not here: nothing
+ * sets the bit -- destroy_sprite has no caller). Then
  * groups 0..3, back to front: 1..3 first save the background under each
  * dirty visible element and mark each invisible one bit 2; every group's
  * dirty list is emptied and its visible elements drawn. */
@@ -276,6 +277,81 @@ uint16_t imgbuf_alloc(uw_motion *m, uint16_t w, uint16_t h) {
     return next;
 }
 
+/* imgbuf_free(handle): 1 when no record has the handle; else 0 after a
+ * merge and the handle itself (AX untouched) when nothing merged -- no
+ * caller reads it. A free record just
+ * before it whose block ends where this one starts takes it in, and a free
+ * record after it that starts where it ends is taken in too -- the merged
+ * records moved out of the table by a forward byte copy of the bytes after
+ * them; with neither, the record is marked free. Then the record the copy's
+ * end leaves the pointer on -- the freed one when nothing merged -- gives
+ * its block back to the bump pointer when it ends there.
+ *
+ * Two of the original's slips are kept: a free record after it that is NOT
+ * adjacent still sends the walk to the merge's tail, which rewrites the
+ * record BEFORE it -- its size to its own (when free) or nothing, plus this
+ * one's, and marks it free -- and leaves this one in use; and after a
+ * merge the copy's end is the old table's end, so the bump test reads the
+ * bytes past the table. */
+uint16_t imgbuf_free(uw_motion *m, uint16_t handle) {
+    uint8_t *hp = m->imgheap;
+    uint16_t bx = 0x14, si, di, cx = 0, b = 0, ax = handle, dx, ret = 0;
+    if (!hp) {
+        UW_NOT_CARRIED(m->not_carried);
+        return 1;
+    }
+    for (;;) {
+        if (rw(hp, bx) == ax) break;
+        bx = (uint16_t)(bx + 0xd);
+        if (bx == rw(hp, 0x12)) return 1;
+    }
+    si = di = bx;
+    if (hp[(uint16_t)(di - 9)]) {
+        dx = (uint16_t)(rw(hp, (uint16_t)(di - 0xd)) + rw(hp, (uint16_t)(di - 0xb)));
+        b = rw(hp, (uint16_t)(di - 0xb));
+        if (ax == dx) {
+            cx = rw(hp, 0x12);
+            ww(hp, 0x12, (uint16_t)(rw(hp, 0x12) - 0xd));
+            cx = (uint16_t)(cx - di);
+            si = (uint16_t)(si + 0xd);
+            goto next;
+        }
+    }
+    if (!hp[(uint16_t)(di + 0x11)]) {
+        hp[(uint16_t)(di + 4)] = 1;
+        ret = handle;
+        goto top;
+    }
+next:
+    if (hp[(uint16_t)(di + 0x11)]) {
+        ax = (uint16_t)(ax + rw(hp, (uint16_t)(di + 2)));
+        dx = rw(hp, (uint16_t)(di + 0xd));
+        if (ax == dx) {
+            ww(hp, 0x12, (uint16_t)(rw(hp, 0x12) - 0xd));
+            b = (uint16_t)(b + rw(hp, (uint16_t)(di + 0xf)));
+            si = (uint16_t)(si + 0xd);
+            if (!cx) {
+                b = rw(hp, (uint16_t)(di + 2));
+                si = (uint16_t)(si + 0xd);
+                cx = (uint16_t)(rw(hp, 0x12) - di);
+                di = (uint16_t)(di + 0xd);
+            }
+        }
+    }
+    b = (uint16_t)(b + rw(hp, (uint16_t)(di + 2)));
+    ww(hp, (uint16_t)(di - 0xb), b);
+    hp[(uint16_t)(di - 9)] = 1;
+    for (; cx; cx--, si++, di++) hp[di] = hp[si];        /* rep movsb */
+    di = (uint16_t)(di - 0xd);
+top:
+    if ((uint16_t)(rw(hp, di) + rw(hp, (uint16_t)(di + 2))) == rw(hp, 0x10)) {
+        ww(hp, 0x10, (uint16_t)(rw(hp, 0x10) - rw(hp, (uint16_t)(di + 2))));
+        ww(hp, 0x12, (uint16_t)(rw(hp, 0x12) - 0xd));
+    }
+    return ret;
+}
+uint16_t uw_motion_imgbuf_free(uw_motion *m, uint16_t handle) { return imgbuf_free(m, handle); }
+
 /* imgbuf_capture_regs and imgbuf_restore_regs: the
  * rectangle (x, y, w, h) -- y the top row in the engine's upward rows --
  * copied between the screen page and the save area at the handle's plane
@@ -347,7 +423,7 @@ void uw_motion_gr_draw_art(uw_motion *m, uint16_t art, int x, int y) {
     }
     for (j = 0; j < h; j++) {
         int sy = 199 - y + j;
-        if (sy < 0 || sy >= 200) continue;
+        if (sy < 0 || sy >= 200 || (m->clip_foot && sy == 199)) continue;
         for (i = 0; i < w; i++) {
             int sx = x + i;
             if (sx < 0 || sx >= 320 || (variant && !px[j * w + i])) continue;
@@ -415,8 +491,13 @@ void uw_motion_draw_string(uw_motion *m, const uint8_t *font, size_t font_size, 
     height = (uint16_t)(font[6] | font[7] << 8);
     row_bytes = (uint16_t)(font[8] | font[9] << 8);
     rec = (size_t)((uint16_t)(height << ((row_bytes - 1) & 0x1f))) + (uint16_t)(font[0] | font[1] << 8);
+    /* the window test: the top row y, the bottom row y - height + 1 and the
+     * left x inside the window (the whole screen whenever text is drawn) */
+    if (y < 0 || y > 199 || y - (int)height + 1 < 0 || y - (int)height + 1 > 199 || x < 0 || x > 319) return;
     for (k = 0; k < 0x84 && str[k]; k++) {
         uint8_t c = (uint8_t)str[k];
+        /* the compose's filter, a signed compare: 0x80..0xff too */
+        if ((int8_t)c < 0x20 || (int8_t)c > 0x7a) c = '?';
         size_t g = 12 + c * rec;
         int r, b, w;
         if (c >= 0x80 || g + rec > font_size) {

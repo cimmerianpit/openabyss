@@ -490,7 +490,7 @@ static void player_derived_state_reset(uw_motion *m) {
 /* enchantment_apply(kind, value, &mask, slot), from the
  * instructions: one enchantment, a spell on the player (slot -1) or a worn
  * item's (its slot). 0 the light's brightness raised to `value` (the slot
- * nibble cleared), 1 a motion block flag, 2 the mask's high nibble raised,
+ * nibble cleared), 1 a motion spell bit (Leap .. Fly), 2 the mask's high nibble raised,
  * 3 the armour adds (value 1), a mask bit (2..4) or 0x60eb's (5..9), 9
  * effect_nonlethal_damage on the Avatar by the value, 11 flags by value, 12 a worn item's
  * protection -- to the armour adds by region, or with bit 3 to the critter
@@ -770,7 +770,7 @@ static void view_effect_warp(uw_motion *m, uint8_t on) {
  * the confusion on picks one of three distortions -- forced to the first
  * once by 0x1b04 -- the rasteriser's warp, one of PALS.DAT's eight
  * palettes (palette_load(rand & 7)), the shading ramp blanked
- * (shade_reload_or_blank(1)); off undoes the one remembered, the warp's
+ * (shade_reload_or_scramble(1)); off undoes the one remembered, the warp's
  * rest, palette_load(0), the ramp read again. */
 static void impairment_effect_set(uw_motion *m, int on) {
     uint8_t *ds = m->ds;
@@ -1233,8 +1233,8 @@ void uw_motion_inventory_release(uw_motion *m) {
  * the inventory panel's hotspot while panel_mode is 0 (the rune bag's and
  * the stats' not carried): the pick cleared; with action_state 1
  * paperdoll_click(4), with 0 paperdoll_click(0) -- but a right click
- * (the event's flags 2) outside use mode and outside a conversation gets -2,
- * the look -- and with a use aimed (2), a page arrow is paperdoll_click(1)
+ * (the event's flags 2) gets -2, the look, unless use mode is on outside
+ * a conversation -- and with a use aimed (2), a page arrow is paperdoll_click(1)
  * and a slot's thing, the pick (inventory_click_take), gets the pending
  * handler (as used on the inventory) and the release wait; nothing there
  * drops the use: the cursor's shape popped, the hand emptied, action_state

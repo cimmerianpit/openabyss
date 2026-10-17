@@ -365,7 +365,14 @@ static int cook_mix_ingredients(uw_motion *m) {
         if (!any) { print_message(m, 0x94); return 0; }
     }
     if (!counts[0] || !counts[1] || !counts[2]) { print_message(m, 0x94); return 0; }
-    if (obj_index_of(m, bowl) == (rw(ls, (uint16_t)(rw(ds, CONTAINER_STACK_TOP) + 8)) >> 6)) container_panel_up(m);
+    /* the bowl open in the panel closed: the top node's +8 through its far
+     * pointer; with none open the original compares a word of
+     * the interrupt table, taken as no match */
+    if (rw(ds, CONTAINER_STACK_TOP) | rw(ds, (uint16_t)(CONTAINER_STACK_TOP + 2))) {
+        const uint8_t *top = far_bytes(m, rw(ds, CONTAINER_STACK_TOP), rw(ds, (uint16_t)(CONTAINER_STACK_TOP + 2)), 0xc);
+        if (!top) UW_NOT_CARRIED(m->not_carried);
+        else if (obj_index_of(m, bowl) == ((rw(top, 8) >> 6) & 0x3ff)) container_panel_up(m);
+    }
     object_chain_clear(m, (uint16_t)(bowl + 6));
     ww(ls, bowl, (uint16_t)((rw(ls, bowl) & 0xfe00) | 0x11b));
     inventory_panel_container_button(m);

@@ -426,8 +426,8 @@ static void draw_gathered_path(uw_dl *m, int shaded) {
         draw_flat_face(m, &m->fb, m->sv, c->count, m->colour);
 }
 
-/* emit_poly_gathered: the shaded pair goes to rast_draw_shaded,
- * which is not here; anything else down the flat path. */
+/* emit_poly_gathered: the shaded pair goes to rast_draw_shaded;
+ * anything else down the flat path. */
 static void emit_gathered(uw_dl *m) {
     m->clip.src = 0;                                /* mov [0x307],0x309 */
     draw_gathered_path(m, m->poly_fn == 0x6146);
@@ -454,7 +454,7 @@ static void gather_slot(uw_dl *m, uint16_t slot, int first) {
     else { c->or_code |= code; c->and_code &= code; }
 }
 
-/* gfx_set_colour_mode_spans, which set_texture's tail far-calls:
+/* the colour mode set_texture's tail sets:
  * `shl ax,1; jb` refuses a mode with bit 15, the colour byte is the high
  * byte of the graphics module's colour table [mode] and the fill is its fill
  * table [type] for a type word [mode] below 0x14 -- 0x0d2d,
@@ -891,8 +891,11 @@ static long run(uw_dl *m, stream *s, int depth) {
                                   << (m->add_shift & 15));
             slot = fetch_w(s);
             if (s->bad) return -1;
-            /* Through the whole basis and into the slot -- and NO outcode,
-             * which every other vertex opcode writes. */
+            /* Through the whole basis and into the slot. The original's
+             * _do_defdelta leaves the slot's outcode byte alone, where
+             * uw_rast_slot_set writes one -- a difference no frame check has
+             * shown, the delta slots' codes being set again before a face
+             * reads them in every list compared. */
             {
                 int16_t v[3] = { in[0], in[2], in[1] };   /* x, z, y */
                 uw_rast_rotate_live(&m->slots, v, out);
@@ -1676,7 +1679,7 @@ static long run(uw_dl *m, stream *s, int depth) {
             }
             break;
         }
-        case 0x00b0:                        /* automap_mark: NO operands */
+        case 0x00b0:                        /* automap_mark, do_mouseq: NO operands; the mouse is the host's */
             m->skipped++;
             break;
         case 0x00c0: {                      /* load_texture_image */

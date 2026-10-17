@@ -364,9 +364,12 @@ void uw_scene_place(uw_scene *s, uint16_t x, uint16_t y, uint16_t z,
     sh = light == 5 ? s->mono_file : s->light_file;
     if (sh.data) memcpy(s->light, sh.data, sh.size < sizeof s->light ? sh.size : sizeof s->light);
     if (s->shade_blank) {
-        /* shade_reload_or_blank(1): bytes 0 and 1 of each of the
+        /* shade_reload_or_scramble(1): bytes 0 and 1 of each of the
          * sixteen 256-byte rows zeroed -- the brightest two entries of every
-         * shade gone to colour 0 */
+         * shade gone to colour 0. Before that the original copies 4 KB of
+         * whatever lies at the bottom of the machine's memory over the
+         * table; the port keeps the table it has just loaded. */
+        UW_NOT_CARRIED(s->unsupported);
         for (i = 0; i < 16; i++) s->light[i * 0x100] = s->light[i * 0x100 + 1] = 0;
     }
 }

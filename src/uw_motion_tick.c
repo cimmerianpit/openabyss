@@ -16,13 +16,15 @@ enum { EXP_LEVEL_THRESHOLDS = 0x097f };   /* experience / 500 a level needs, by 
 
 /* player_gain_experience(delta), from the instructions. A loss
  * takes the 32-bit total at rec +0x4e down, to 0 if it would go below. A
- * gain is refused at 0x17700 and up; halved (plus one) when the character's
- * level (rec +0x3d) is past twice the dungeon level plus two; the skill
- * points (rec +0x52) grow by the new total / 3000 past the last such count
- * (rec +0x53); the level-up loop walks the thresholds for total / 500 and
- * counts player_level_up. The panels are refreshed when the old total >> 4,
- * its low word sign-extended, compares above the new -- which a gain almost
- * never makes true; the instructions say so. */
+ * gain is refused once the total is past 0x17700 (96,000),
+ * so the award that crosses it still lands; halved (plus one) when the
+ * character's level (rec +0x3d) is past twice the dungeon level plus two;
+ * the skill points (rec +0x52) grow by the new total / 3000 past the last
+ * such count (rec +0x53); the level-up loop walks the thresholds for
+ * total / 500 and counts player_level_up. The panels are refreshed when the
+ * new total >> 4 compares above the old one's low word sign-extended
+ * (an unsigned 32-bit compare) -- below the cap, whenever a gain changes
+ * total >> 4. */
 enum { LEVEL_UP_DIGITS = 0x1c92 };  /* the level's two digits, the tail of message 0x93 */
 
 /* player_recompute_maxima(fill): max hit points
@@ -101,7 +103,7 @@ void player_gain_experience(uw_motion *m, int16_t delta) {
     exp += (uint32_t)(int32_t)delta;
     ww(ds, (uint16_t)(rec + 0x4e), (uint16_t)exp);
     ww(ds, (uint16_t)(rec + 0x50), (uint16_t)(exp >> 16));
-    refresh = (uint32_t)(int32_t)(int16_t)old_lo > (exp >> 4);
+    refresh = (exp >> 4) > (uint32_t)(int32_t)(int16_t)old_lo;
     q = exp / 500u;
     while (ds[(uint16_t)(EXP_LEVEL_THRESHOLDS + ds[(uint16_t)(rec + 0x3d)] + levels)] <= (int16_t)(uint16_t)q
            && ds[(uint16_t)(rec + 0x3d)] + levels < 0x10)
@@ -275,11 +277,13 @@ static int update_light_sources(uw_motion *m, int16_t steps, uint8_t step) {
     return out;
 }
 
-/* player_update_fatigue: with fatigue (rec +0xb9) past 0x50, an
- * athletics-style roll (rec +0x34 against the load rec +0x4a / +0x4c, in
- * 32nds) adds 3 - roll d4 below 0x8c; past 0x78 a second roll's failure
- * shows the collapse frame (counted) and damages the player. */
-static void player_update_fatigue(uw_motion *m) {
+/* player_drowning_tick: with the swim count (rec +0xb9, the head's dip below
+ * the surface) past 0x50, a Swimming roll (rec +0x34 against the load rec
+ * +0x4a / +0x4c, in 32nds) adds 3 - roll d4 below 0x8c; past 0x78 a second
+ * roll's failure fills the view with colour 0xc6 (screen_flash) and
+ * damages the player --
+ * drowning. */
+static void player_drowning_tick(uw_motion *m) {
     uint8_t *ds = m->ds;
     uint16_t rec = rw(ds, PLAYER_RECORD_PTR);
     uint8_t load = 0;
@@ -302,7 +306,8 @@ static void player_update_fatigue(uw_motion *m) {
 
 /* player_update_step, when the tick update's accumulator passes
  * 20 seconds' worth: the spell slots' durations, the lights, the 0x61
- * counter, the regeneration flags, fatigue; every third step poison's
+ * counter, the regeneration flags, drowning (player_drowning_tick); every
+ * third step poison's
  * damage and the mana roll; every 24th hunger, the second 0x61 counter, the
  * create-object traps' chance, the creatures' hunger bits, the three
  * rec +0x3a counters and the vitality roll, and the counter back to 0. */
@@ -335,7 +340,7 @@ static void player_update_step(uw_motion *m) {
         if (ds[REGEN_FLAGS] & 1) player_restore_vitality(m, pl, -1);
         if (ds[REGEN_FLAGS] & 2) player_restore_mana(m, pl, -1);
     }
-    if (ds[(uint16_t)(rec + 0xb9)] > 0x50) player_update_fatigue(m);
+    if (ds[(uint16_t)(rec + 0xb9)] > 0x50) player_drowning_tick(m);
     if (ds[GAME_STEP_COUNTER] % 3 == 0) {
         uint16_t w = rw(ds, (uint16_t)(rec + 0x5f));
         int r;
@@ -419,7 +424,7 @@ void uw_motion_tick_update(uw_motion *m, uint32_t clock, uint16_t stop) {
         if (!TICK_REACHED(stop, 0x4f9)) return;
         if ((rt_rand(m) & 0x1f) == 0) {
             if (!TICK_REACHED(stop, 0x503)) return;
-            player_fall_damage(m);
+            ethereal_void_effect(m);
         }
     }
 }
@@ -429,7 +434,7 @@ void uw_motion_tick_update(uw_motion *m, uint32_t clock, uint16_t stop) {
 /* apply_environment_damage: harm from the tracked object's
  * status flags at record+0xb8, the same byte that gates the view's
  * impairment -- bits 0..1 are lethal, 0xff of damage before the recalc and
- * again after it; bit 3, with the motion block flags' 0x16 clear, is
+ * again after it; bit 3, unless slow falling, levitating or flying (0x16), is
  * (rand % 6) * 10 + 12 of type 0x10. The settle between them is where the
  * two halves of the lethal case are told apart. */
 static void apply_environment_damage(uw_motion *m) {
@@ -776,13 +781,14 @@ void player_start_vertical_motion(uw_motion *m, uint16_t obj) {
     ww(ds, VERTICAL_GRAVITY, 0);
 }
 
-/* player_fall_damage: screen_show_frame(0xb5) -- the wince,
+/* ethereal_void_effect, the Ethereal Void's, which the tick's level-9 branch
+ * runs one frame in 32: screen_show_frame(0xb5) -- the wince,
  * the host's -- then the hit points banded by what is left: from 0x65 up
  * rand % 6 lost, 0x33..0x64 rand % 4, under that one time in four rand % 3
  * when above 0x14, else (or when the roll passed) one time in eight one
  * point when above 1; eleven times in twelve a daze of rand % 0x1e + 0xf
  * ticks; and the heading's panel value set to rand & 0xf. */
-void player_fall_damage(uw_motion *m) {
+void ethereal_void_effect(uw_motion *m) {
     uint8_t *ds = m->ds, *ls = m->lseg;
     uint16_t pl = rw(ds, TRACKED_OBJECT);
     uint8_t hp = ls[(uint16_t)(pl + 8)];

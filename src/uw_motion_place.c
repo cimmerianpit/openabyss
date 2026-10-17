@@ -301,7 +301,7 @@ static int combine_ingredient_consumed(uw_motion *m, uint16_t obj, int16_t recip
  * container -- for slot 0x13, the open container's own, the Avatar when the
  * root alone is open (and then the first empty backpack slot 0xb..0x12 takes
  * it; none, 0) or else the container one out. The rune bag (0x8f) asks
- * 5a0b's rune test (not carried). Otherwise its weight onto the carried
+ * 5a0b's rune test (rune_bag_add). Otherwise its weight onto the carried
  * weight, and onto the running weight (+0xa) of every open container from
  * the one out (slot 0x13) or the top (a page slot) back; then along the
  * destination's contents the first thing it stacks with takes it -- a

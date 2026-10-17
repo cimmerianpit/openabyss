@@ -271,13 +271,6 @@ static void cursor_init(uw_motion *m) {
 
 /* ---- the player ------------------------------------------------------------ */
 
-/* roll_dice's 3d4 and 2d10 through rt_rand, as player_init rolls them. */
-static int dice(uw_motion *m, int count, int sides) {
-    int i, t = 0;
-    for (i = 0; i < count; i++) t += rt_rand(m) % sides + 1;
-    return t;
-}
-
 /* player_init(blank): the new character's
  * record, then the skills 3d4 and the attributes 2d10 + 10 when not blank,
  * player_recompute_maxima(1), +0x4a cleared, the Avatar's hit points the
@@ -329,8 +322,8 @@ static void player_init(uw_motion *m, int blank) {
     ds[rec + 0x64] = (uint8_t)((ds[rec + 0x64] & 0xe3) | ((r % 5 & 7) << 2));
     r = rt_rand(m);
     ds[rec + 0x64] = (uint8_t)((ds[rec + 0x64] & 0xfd) | ((r & 1) << 1));
-    for (i = 0; i < 0x14; i++) ds[rec + 0x21 + i] = (uint8_t)(blank ? 0 : dice(m, 3, 4));
-    for (i = 0; i < 3; i++) ds[row + 5 + i] = (uint8_t)(blank ? 0 : dice(m, 2, 10) + 10);
+    for (i = 0; i < 0x14; i++) ds[rec + 0x21 + i] = (uint8_t)(blank ? 0 : roll_dice(m, 3, 4));
+    for (i = 0; i < 3; i++) ds[row + 5 + i] = (uint8_t)(blank ? 0 : roll_dice(m, 2, 10) + 10);
     player_recompute_maxima(m, 1);
     ww(ds, (uint16_t)(rec + 0x4a), 0);      /* the carried weight, a word */
     m->lseg[(uint16_t)(tracked + 8)] = (uint8_t)(ds[row + 4] - 6 - rt_rand(m) % 6);
@@ -458,8 +451,8 @@ static bool chargen_result(uw_motion *m, const char *dir, const uw_character *ch
         size_t n = strlen(ch->name);
         memset(ds + rec, 0, 0x1d);
         memcpy(ds + rec, ch->name, n < 0x1d ? n : 0x1d);
-        ds[rec + 0x1d] = 0;
     }
+    ds[rec + 0x1d] = 0;                     /* whether or not a name was typed */
     uw_chargen_keep(m);
     uw_skills_close(&sk);
     return true;
@@ -473,9 +466,11 @@ bool uw_boot_new_game_begin(uw_boot *b, uw_motion *m, uw_scene *scene, const cha
     uw_blob bl;
     char path[768];
     uint16_t tracked;
-    int i;
+    int i, program = b->program;
 
+    /* the record cleared -- but not which boot it is, which the caller set */
     memset(b, 0, sizeof *b);
+    b->program = program;
     snprintf(b->dir, sizeof b->dir, "%s", dir);
     memset(m, 0, sizeof *m);
     m->ds = ds;
@@ -502,6 +497,17 @@ bool uw_boot_new_game_begin(uw_boot *b, uw_motion *m, uw_scene *scene, const cha
         if (!exe.data || hdr + (0x6624 - 0x1000) * 16u + 0x10000 > exe.size) { uw_free(&exe); return false; }
         memcpy(b->keys, exe.data + hdr + (0x6624 - 0x1000) * 16u, 0x10000);
         memset(b->keys + 0x1e2, 0, 0x1eb + 0x80 - 0x1e2);
+        /* the pathfinder's segment, as far as the load image goes (BSS past
+         * it): atk_charge's wind-up table at +0x3c0 (50..255, the scale a
+         * creature's blow takes) */
+        {
+            size_t pages = (size_t)(exe.data[4] | exe.data[5] << 8), last = (size_t)(exe.data[2] | exe.data[3] << 8);
+            size_t image = pages * 512u - (last ? 512u - last : 0) - hdr, off = (0x65dd - 0x1000) * 16u;
+            size_t n = image > off ? image - off : 0;
+            if (n > 0x10000) n = 0x10000;
+            if (hdr + off + n > exe.size) { uw_free(&exe); return false; }
+            memcpy(b->ext, exe.data + hdr + off, n);
+        }
         uw_free(&exe);
     }
     if (!obj_properties_load(ds, dir)) return false;
@@ -718,7 +724,7 @@ bool uw_boot_new_game_begin(uw_boot *b, uw_motion *m, uw_scene *scene, const cha
      * The host attaches its driver after (uw_motion_sound_attach). */
     memset(ds + 0x0135, 0, 4);
     if (!uw_motion_level_load(m, &b->ark, 1, b->terrain.data, b->terrain.size)) return false;
-    /* tracked_object_reset: the Avatar's record cleared, its
+    /* player_object_reset: the Avatar's record cleared, its
      * whoami 0xfd, its id 0x7f */
     {
         uint8_t *ls = b->lseg;
@@ -737,7 +743,10 @@ bool uw_boot_new_game_begin(uw_boot *b, uw_motion *m, uw_scene *scene, const cha
      * halves. The program's own boot is game_init's instead:
      * player_init(0), the skills and attributes rolled, some 69 draws of
      * rt_rand before the title -- new_game's player_init(1) comes later,
-     * when the menu creates a character */
+     * when the menu creates a character. Before them, init_world's first
+     * call, init_mem, asks EMS for (rand() % 8) * 2 + 0x36 pages: one draw
+     * (seventy in all; menu1's states hold the seventieth state) */
+    if (b->program) (void)rt_rand(m);
     player_init(m, b->program ? 0 : 1);
     (void)clock;
     return true;

@@ -38,6 +38,14 @@ static bool open_anim(uw_cutscene *c) {
             if (b.order < a.order) { int t = c->order[i]; c->order[i] = c->order[j]; c->order[j] = t; }
         }
     uw_anim_palette(&c->anim, c->palette);   /* palette_to_dac(header + 0x100) */
+    for (i = 0; i < 16; i++) {
+        /* cutscene_read_header's normalisation of the cycles' rates */
+        const uint8_t *r = c->anim.file.data + 0x80 + i * 8;
+        c->cycles[i].started = (uint16_t)(r[0] | r[1] << 8);
+        c->cycles[i].rate = (uint16_t)(((r[2] | r[3] << 8) >> 8) & 0x3f);
+        c->cycles[i].first = r[6];
+        c->cycles[i].last = r[7];
+    }
     c->rate = c->anim.frame_rate ? c->anim.frame_rate : 1;
     c->page = 0;
     c->frame_in_page = 0;
@@ -83,11 +91,21 @@ static void decode_frame(uw_cutscene *c) {
 
 static uint16_t rw(const uint8_t *d, size_t at) { return uw_u16(d + at); }
 
-/* op0 and op13: the string word-wrapped into at most six lines.
- * The original measures with the graphics module at 0x141 pixels; this
- * wraps on the newlines the string carries and then on spaces at 40
- * characters, which is the same six-line shape for every shipped line and
- * is marked where it is not the same rule. */
+static int string_width(const uw_blob *font, const char *s);
+
+/* The width of `n` bytes of `s` in the cutscene's font. */
+static int span_width(const uw_cutscene *c, const char *s, size_t n) {
+    char buf[UW_CUT_LINE * 2];
+    if (n >= sizeof buf) n = sizeof buf - 1;
+    memcpy(buf, s, n);
+    buf[n] = 0;
+    return string_width(&c->font, buf);
+}
+
+/* op0 and op13: the string cut at its newlines, then each line wrapped by
+ * width, word by word -- a word's width with its trailing space, the last
+ * word's without -- a line broken before the word that would take it past
+ * 320 pixels (the space before it dropped); six lines at most. */
 static void set_text(uw_cutscene *c, uint8_t colour, uint16_t id) {
     char text[512];
     int block = id >> 9, index = id & 0x1ff, n = 0;
@@ -106,23 +124,27 @@ static void set_text(uw_cutscene *c, uint8_t colour, uint16_t id) {
         }
     }
     for (p = text; *p && n < UW_CUT_LINES; ) {
-        char *nl = strchr(p, '\n');
-        size_t len = nl ? (size_t)(nl - p) : strlen(p);
-        while (len > 40) {                       /* the wrap the original measures */
-            size_t cut = 40;
-            while (cut && p[cut] != ' ') cut--;
-            if (!cut) cut = 40;
-            if (n >= UW_CUT_LINES) break;
-            snprintf(c->line[n], UW_CUT_LINE, "%.*s", (int)cut, p);
-            n++;
-            p += cut + (p[cut] == ' ');
-            len = nl ? (size_t)(nl - p) : strlen(p);
+        char *nl = strchr(p, '\n'), *end = nl ? nl : p + strlen(p), *start = p, *w = p;
+        int used = 0;
+        while (w && n < UW_CUT_LINES) {
+            char *sp = memchr(w, ' ', (size_t)(end - w));
+            int width = sp ? span_width(c, w, (size_t)(sp + 1 - w)) : span_width(c, w, (size_t)(end - w));
+            if (used + width > 320 && w > start) {
+                /* the line up to the space before this word; the word
+                 * begins the next */
+                snprintf(c->line[n++], UW_CUT_LINE, "%.*s", (int)(w - 1 - start), start);
+                start = w;
+                used = 0;
+                continue;
+            }
+            used += width;
+            if (!sp) {
+                snprintf(c->line[n++], UW_CUT_LINE, "%.*s", (int)(end - start), start);
+                break;
+            }
+            w = sp + 1;
         }
-        if (n >= UW_CUT_LINES) break;
-        snprintf(c->line[n], UW_CUT_LINE, "%.*s", (int)len, p);
-        n++;
-        p += len;
-        if (*p == '\n') p++;
+        p = nl ? nl + 1 : end;
     }
     c->lines = n;
 }
@@ -169,9 +191,10 @@ static void run_record(uw_cutscene *c, uint16_t op, const uint8_t *o, int n) {
         c->flags &= ~UW_CUT_WAITING;
         break;
     case 8:                                   /* change_file(cutscene, file) */
+        /* only the next file's name: the file playing goes on to its own
+         * op5 or its last page */
         c->cut_no = (int)rw(o, 0);
         c->file_no = (int)rw(o, 2);
-        c->flags &= ~UW_CUT_SEGMENT;
         break;
     /* fade_out(speed) and fade_in(speed): taken only in a full-screen
      * cutscene (the window 320 x 200) and while the field is above -2 */
@@ -217,7 +240,8 @@ static void run_record(uw_cutscene *c, uint16_t op, const uint8_t *o, int n) {
 
 /* Every record due at `frame`: the interpreter tests the record's frame
  * word against the frame counter and runs the chain of records that
- * follow it immediately. */
+ * follow it immediately, while the file is still playing (op5 and op6
+ * clear bit 2, and the chain stops there). */
 static void run_due(uw_cutscene *c, uint16_t frame) {
     while (c->at + 4 <= c->script.size) {
         uint16_t f = rw(c->script.data, c->at);
@@ -225,6 +249,9 @@ static void run_due(uw_cutscene *c, uint16_t frame) {
         int n;
         /* no record runs while a repeat is pending */
         if (f != frame || c->repeat) break;
+        /* a frame's chain stops once the file has ended -- the records
+         * before any frame run with no file open, and have no such test */
+        if (frame && (!(c->flags & UW_CUT_SEGMENT) || !(c->flags & UW_CUT_RUNNING))) break;
         if (op >= UW_CUT_OPCODES) { c->flags &= ~UW_CUT_RUNNING; return; }
         n = uw_cut_operands[op];
         if (c->at + 4 + (size_t)n * 2 > c->script.size) { c->flags &= ~UW_CUT_RUNNING; return; }
@@ -388,6 +415,23 @@ static void service_voice(uw_cutscene *c) {
     }
 }
 
+/* A large page begins -- the first of a file, the next, or the first again
+ * on op7's repeat: the pause frame and its limit zeroed and bit 1 cleared
+ * before the page's first record, so a pause op4 set for a frame on a
+ * later page never holds. The original's reset comes before the wait
+ * that holds the page's last frame up (0dfa..0e33), so a key in that wait
+ * is still there for the skip test after it: the port clears bit 1 at the
+ * end of the step that shows a page's last frame (page_ends), before its
+ * wait, and only the pause here. */
+static void page_begins(uw_cutscene *c) {
+    c->pause_frame = 0;
+    c->pause_limit = 0;
+}
+
+static void page_ends(uw_cutscene *c) {
+    if (c->frame_in_page >= page_frames(c)) c->flags &= ~UW_CUT_WAITING;
+}
+
 /* One turn of the frame loop at `clock`, the time the frame is due: 1
  * with a frame up, 0 when frames ran unshown and something waits on the
  * host (a fade out, a voice, an effect), -1 at the end. */
@@ -403,6 +447,7 @@ static int step_frame(uw_cutscene *c, uint32_t clock) {
         while (!c->have_anim || !(c->flags & UW_CUT_SEGMENT)) {
             if (!open_anim(c)) { c->flags &= ~UW_CUT_RUNNING; return -1; }
             c->advanced = clock;              /* the debounce's clock, at the open */
+            page_begins(c);
         }
 
         /* the page's frames run out: the next page, or the segment ends and
@@ -416,6 +461,7 @@ static int step_frame(uw_cutscene *c, uint32_t clock) {
                 if (!open_anim(c)) { c->flags &= ~UW_CUT_RUNNING; return -1; }
                 c->advanced = clock;
             }
+            page_begins(c);
         }
 
         decode_frame(c);
@@ -471,6 +517,10 @@ static int step_frame(uw_cutscene *c, uint32_t clock) {
             c->frame_in_page = 0;
             c->frame = 1;
             if (c->flags & UW_CUT_RUNNING) c->flags |= UW_CUT_SEGMENT;
+            page_begins(c);
+            c->flags &= ~UW_CUT_WAITING;
+            /* The repeat's own frame is blitted and the jump goes on to frame
+             * 1 at once. */
             continue;
         }
 
@@ -480,6 +530,7 @@ static int step_frame(uw_cutscene *c, uint32_t clock) {
              * what it must do before the next: a fade out, a voice or an
              * effect to start, the end. */
             c->frame++;
+            page_ends(c);
             if (!(c->flags & UW_CUT_RUNNING)) return -1;
             if (c->fade_out >= 0 || c->voice_start >= 0) {
                 c->due = clock;
@@ -519,6 +570,7 @@ static int step_frame(uw_cutscene *c, uint32_t clock) {
             c->pause_limit = 0;
         }
         c->frame++;
+        page_ends(c);
         return 1;
     }
 }
@@ -531,17 +583,20 @@ void uw_cutscene_advance(uw_cutscene *c, uint32_t clock, int key) {
      * ticks of the last input or the file's opening is the same press;
      * a key is taken whenever it comes */
     if (!key && (clock < c->advanced || clock - c->advanced <= 0x40)) return;
-    c->advanced = clock;
-    /* bit 1: the play-to's skip, at the next frame; and a pause ends,
-     * though not the frame's own period, which the next frame
-     * waits out from the flip as ever */
-    c->flags |= UW_CUT_WAITING;
     if (c->pausing) {
+        /* a pause cut short: the key ORed into bit 1 and cleared again at
+         * once (128e..129e), the input's time not written -- so it never
+         * also skips -- though not the frame's own period, which the next
+         * frame waits out from the flip as ever */
         uint32_t period = c->frame_start + (uint32_t)(0x100 / c->rate);
         c->pausing = 0;
         c->forever = 0;
         c->due = period > clock ? period : clock;
+        return;
     }
+    c->advanced = clock;
+    /* bit 1: the play-to's skip, at the next frame */
+    c->flags |= UW_CUT_WAITING;
 }
 
 /* The voice has played out (voc_playback_finished turning true):
@@ -563,6 +618,27 @@ void uw_cutscene_voice_started(uw_cutscene *c, long ticks) {
     c->voice_start = -1;
     if (ticks < 0) voice_played_out(c, c->now);
     else c->voice_end = c->now + (uint32_t)ticks;
+}
+
+/* anm_cycle: each cycle with a rate moves once 0x38e / rate ticks have
+ * passed since it last did -- the DAC's entries first..last rotated down
+ * by one (rotate_bank(first, n, 0)), the first's colour to the last. 1 when
+ * any moved. */
+static int cycle_tick(uw_cutscene *c, uint32_t clock) {
+    int i, moved = 0;
+    if (!c->have_anim) return 0;
+    for (i = 0; i < 16; i++) {
+        uint8_t first = c->cycles[i].first, saved[3];
+        int k, count = (uint8_t)(c->cycles[i].last - first + 1);
+        if (!c->cycles[i].rate) continue;
+        if ((uint16_t)((uint16_t)clock - c->cycles[i].started) < 0x38e / c->cycles[i].rate) continue;
+        memcpy(saved, c->dac + first * 3, 3);
+        for (k = 0; k < count - 1 && first + k + 1 < 256; k++) memcpy(c->dac + (first + k) * 3, c->dac + (first + k + 1) * 3, 3);
+        if (first + k < 256) memcpy(c->dac + (first + k) * 3, saved, 3);
+        c->cycles[i].started = (uint16_t)clock;
+        moved = 1;
+    }
+    return moved;
 }
 
 int uw_cutscene_run(uw_cutscene *c, uint32_t clock) {
@@ -592,8 +668,11 @@ int uw_cutscene_run(uw_cutscene *c, uint32_t clock) {
         /* voc_play_file, once any fade in is over */
         if (c->voice_start >= 0) return UW_CUT_VOICE;
         /* the end: voc_stop, and full screen the fade out a fade in still
-         * owes, over 2 */
-        if (!(c->flags & UW_CUT_RUNNING)) {
+         * owes, over 2 -- once a pause set on the end frame is over, and
+         * op9's fade out after it */
+        /* Escape (skipped) goes to the end at once, from the frame's wait or
+         * the pause's (0e36..0e52, 1236..1240 to 13b7) */
+        if (!(c->flags & UW_CUT_RUNNING) && (c->skipped || (!c->pausing && c->fade_out < 0))) {
             c->playing = 0;
             if (c->full_screen && c->frames && c->fade_out != -2 && !c->closing) {
                 c->closing = 1;
@@ -612,7 +691,10 @@ int uw_cutscene_run(uw_cutscene *c, uint32_t clock) {
                 return UW_CUT_SILENT;
             }
         }
-        if (c->due == 0xffffffffu || c->due > clock) return UW_CUT_IDLE;
+        if (c->due == 0xffffffffu || c->due > clock) {
+            /* anm_cycle, each turn of the frame's and the pause's waits */
+            return cycle_tick(c, clock) ? UW_CUT_DAC : UW_CUT_IDLE;
+        }
         t = c->due > c->now ? c->due : c->now;
         c->now = t;
         /* op9's fade out, once the frame's wait is over,
@@ -621,6 +703,12 @@ int uw_cutscene_run(uw_cutscene *c, uint32_t clock) {
             start_fade(c, 1, c->fade_out, t);
             c->fade_out = -2;
             c->fade_in = -1;
+            continue;
+        }
+        /* the end op on a frame that paused: its pause over -- and op9's
+         * fade out after it -- the end */
+        if (!(c->flags & UW_CUT_RUNNING)) {
+            c->pausing = 0;
             continue;
         }
         switch (step_frame(c, t)) {

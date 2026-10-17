@@ -23,7 +23,7 @@
 
 enum {
     CLOCK_STAMP          = 0x0774,   /* last_move_key_clock, 32 bits */
-    TURN_PHASE           = 0x0778,   /* movement_turn_phase */
+    TURN_PHASE           = 0x0778,   /* mobile_update_advance */
     EFFECTS_ON_MOVE      = 0x0aaf,
     TURN_HALVED          = 0x0283,
     PLAYER_RECORD_PTR    = 0x7270,
@@ -52,7 +52,7 @@ enum {
     SPEED_BASE_FORWARD   = 0x00ce,
     SPEED_MAX_ACCEL      = 0x00c8,
     HEADING_OFFSET       = 0x00d0,   /* movement_heading_offset */
-    BLOCK_FLAGS          = 0x00d2,   /* motion_block_flags */
+    BLOCK_FLAGS          = 0x00d2,   /* motion_spell_bits: 1 Leap, 2 Slow Fall, 4 Levitate, 8 Water Walk, 0x10 Fly */
     SPEED_SCALE_TABLE    = 0x00d4,   /* movement_speed_scale, 7 bytes */
     MODE_FLAGS_TABLE     = 0x00db,   /* movement_mode_flags, 7 bytes */
     TURN_RATE            = 0x075c,
@@ -165,8 +165,7 @@ static inline int check_skill_roll(uw_motion *m, int skill, int difficulty) {
 
 /* play_sound_effect and play_sound_effect_at_xy both
  * return 0xff before anything else unless sfx_available and sfx_enabled are
- * set; past that gate the mixer is not ported, and 0xff stands in for the
- * handle. */
+ * set; past that gate, the mixer (uw_motion_sound.c). */
 enum { SFX_ENABLED = 0x0136, SFX_AVAILABLE = 0x0137 };
 
 enum {
@@ -594,7 +593,7 @@ int turn_towards_path(uw_motion *m, uint16_t rec);
 int pathfind_between_tiles(uw_motion *m, uint8_t x0, uint8_t y0, uint8_t z0, uint8_t x1, uint8_t y1, uint8_t z1, uint8_t limit);
 void path_pack(uw_motion *m, uint16_t rec);
 int path_slot_alloc(uw_motion *m, uint8_t *slot);
-uint8_t creature_vigour(uw_motion *m);
+uint8_t creature_acceptable_danger(uw_motion *m);
 void release_path_slot(uw_motion *m);
 
 /* uw_motion_combat.c */
@@ -641,6 +640,7 @@ void elem_set_top_crop(uw_motion *m, uint16_t h, uint8_t rows);
 const uint8_t *art_image(uw_motion *m, uint16_t art, int *w, int *h);
 uint16_t imgbuf_record(const uw_motion *m, uint16_t handle);
 uint16_t imgbuf_alloc(uw_motion *m, uint16_t w, uint16_t h);
+uint16_t imgbuf_free(uw_motion *m, uint16_t handle);
 void imgbuf_copy(uw_motion *m, uint16_t handle, int x, int y, int w, int h, int restore);
 void imgbuf_restore(uw_motion *m, uint16_t handle);
 void elem_flush(uw_motion *m);
@@ -658,7 +658,7 @@ uint16_t trap_teleport(uw_motion *m, uint16_t who, int16_t x, int16_t y, int16_t
  * player_apply_impact(mask, n), bit 0 the daze and bit 1 the knockback;
  * player_start_vertical_motion(obj), which sets the player's vertical pair
  * (0x8d, 0) when `obj` is the player and collision face bit 4 is clear;
- * player_fall_damage, level 9's, banded by the hit points left. */
+ * ethereal_void_effect, level 9's, banded by the hit points left. */
 void player_start_status_effect(uw_motion *m, uint8_t bit, uint8_t ticks);
 /* shade_set_level(level) -- src/uw_motion_inventory.c. */
 void shade_set_level(uw_motion *m, uint8_t level);
@@ -694,7 +694,7 @@ void player_daze(uw_motion *m);
 void player_knockback_up(uw_motion *m, int16_t n);
 void player_apply_impact(uw_motion *m, uint16_t mask, int16_t n);
 void player_start_vertical_motion(uw_motion *m, uint16_t obj);
-void player_fall_damage(uw_motion *m);
+void ethereal_void_effect(uw_motion *m);
 /* player_death and what the silver tree does on arrival
  * (player_resurrect) -- src/uw_motion_tick.c. */
 void player_death(uw_motion *m);
@@ -863,7 +863,7 @@ void scroll_ask_yes_no(uw_motion *m, uint16_t message, int initial, uint8_t whos
 int  skill_gain(uw_motion *m, int skill);
 void chant_mantra(uw_motion *m);
 void item_repair(uw_motion *m, uint16_t obj, int skill);
-void use_anvil(uw_motion *m, uint16_t obj);
+void use_anvil(uw_motion *m, uint16_t obj, int in_inventory);
 void play_instrument(uw_motion *m, int which);
 int action_in_reach(uw_motion *m, int16_t max_dist2, uint16_t obj, uint16_t tile);
 void append(char *buf, size_t cap, const char *text);

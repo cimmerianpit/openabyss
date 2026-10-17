@@ -84,24 +84,32 @@ static int strcmp_ids(uw_convvm *vm, uint16_t below, uint16_t top) {
 
 /* ---- opening and closing ------------------------------------------------- */
 
-bool uw_talk_open(uw_talk *t, uw_motion *m, const char *dir) {
+/* bglobals_create (init_babl): SAVE0's BGLOBALS.DAT from BABGLOBS.DAT,
+ * every conversation's variables zero */
+void uw_talk_new_globals(uw_talk *t) {
     char path[768];
     uw_babglobs bg;
-    memset(t, 0, sizeof *t);
-    t->m = m;
-    snprintf(t->dir, sizeof t->dir, "%s", dir);
-    snprintf(path, sizeof path, "%s/DATA/CNV.ARK", dir);
-    t->have_cnv = uw_ark_open(&t->cnv, path);
-    if (!t->have_cnv) return false;
-    /* bglobals_create: SAVE0's BGLOBALS.DAT from BABGLOBS.DAT,
-     * every conversation's variables zero */
-    snprintf(path, sizeof path, "%s/DATA/BABGLOBS.DAT", dir);
+    free(t->bglobals);
+    t->bglobals = NULL;
+    t->bglobals_size = 0;
+    snprintf(path, sizeof path, "%s/DATA/BABGLOBS.DAT", t->dir);
     if (uw_babglobs_open(&bg, path)) {
         size_t cap = uw_babglobs_live_size(&bg) + 0x1000;
         t->bglobals = calloc(1, cap);
         if (t->bglobals) t->bglobals_size = uw_bglobals_create(&bg, t->bglobals, cap);
         uw_babglobs_close(&bg);
     }
+}
+
+bool uw_talk_open(uw_talk *t, uw_motion *m, const char *dir) {
+    char path[768];
+    memset(t, 0, sizeof *t);
+    t->m = m;
+    snprintf(t->dir, sizeof t->dir, "%s", dir);
+    snprintf(path, sizeof path, "%s/DATA/CNV.ARK", dir);
+    t->have_cnv = uw_ark_open(&t->cnv, path);
+    if (!t->have_cnv) return false;
+    uw_talk_new_globals(t);
     t->sc.pak = m->strings;
     t->sc.ring_seg = 0x4f4b;
     return m->strings != NULL;
@@ -145,19 +153,16 @@ static void run(uw_talk *t, uint32_t clock) {
     if (r > 0) UW_NOT_CARRIED(t->not_carried);
     {
         /* conv_start's tail: the variables written back; conv_unload's
-         * bglobals_save_conv and the run-time strings emptied; the hold on
-         * the screen for a click or 500 ticks when the NPC spoke last and
-         * nothing changed */
+         * bglobals_save_conv and the run-time strings emptied; then
+         * scroll_wait: any input ends it, or 500 ticks when the player
+         * spoke last (the speaker byte set) and nothing changed --
+         * otherwise it has no timeout */
         int changed = uw_convbi_export_npc_vars(&t->bi, &t->vm, t->talker);
         if (t->bglobals)
             uw_bglobals_save_conv(t->bglobals, t->bglobals_size, t->slot, t->mem, t->vm.memslots);
         uw_strcache_reset(&t->sc, 0x7c);
-        if (!changed && ds[SPOKE]) {
-            t->wait = UW_TALK_HOLD;
-            t->hold_until = clock + HOLD_TICKS;
-        } else {
-            t->wait = UW_TALK_DONE;
-        }
+        t->wait = UW_TALK_HOLD;
+        t->hold_until = !changed && ds[SPOKE] ? clock + HOLD_TICKS : 0;
     }
 }
 
@@ -354,8 +359,19 @@ int uw_talk_option_at_cursor(const uw_talk *t) {
 }
 
 int uw_talk_tick(uw_talk *t, uint32_t clock, int click) {
-    if (t->wait == UW_TALK_HOLD && (click || (int32_t)(clock - t->hold_until) >= 0)) t->wait = UW_TALK_DONE;
-    if (t->wait == UW_TALK_MORE && (click || (t->hold_until && (int32_t)(clock - t->hold_until) >= 0))) {
+    if (t->wait == UW_TALK_MENU && !t->m->ds[0x0a8e]) {
+        /* conv_menu_run: menus_active cleared by a print -- scroll_wait(500,
+         * 0), the ticks or a click, then the options listed again */
+        if (!t->relist_at) t->relist_at = clock + 0x1f4;
+        if (click || (int32_t)(clock - t->relist_at) > 0) {       /* scroll_wait's `ja`: past the end */
+            t->relist_at = 0;
+            uw_convbi_menu_relist(&t->bi);
+        }
+        return t->wait;
+    }
+    if (t->wait == UW_TALK_HOLD && (click || (t->hold_until && (int32_t)(clock - t->hold_until) > 0)))
+        t->wait = UW_TALK_DONE;
+    if (t->wait == UW_TALK_MORE && (click || (t->hold_until && (int32_t)(clock - t->hold_until) > 0))) {
         uw_scroll *s = t->m->scroll;
         int resumed = 1;
         if (s) {

@@ -7,6 +7,7 @@
  *
  * One of src/uw_motion*.c: see uw_motion.h and uw_motion_int.h. */
 #include "uw_motion_int.h"
+#include "uw_scroll.h"
 
 /* The pools as the data segment holds their pointers. */
 static int pool_reclaim(void *user, uw_objpool *p, int margin, int max);
@@ -149,13 +150,12 @@ static void level_effect_remove(uw_motion *m, uint16_t index) {
     memcpy(ds + 0x369c + i * 6, ds + 0x369c + n * 6, 6);
 }
 
-/* Three neighbours the port leaves out, because nothing in the image reaches
+/* Two neighbours the port leaves out, because nothing in the image reaches
  * them -- no near or far call, no stored pointer: level_effect_expire_for_object,
- * the effect of an object index let run to its last frame;
+ * the effect of an object index let run to its last frame; and
  * spawn_effect_object, a class-7 object made off a source with
- * nine arguments; and in an overlay object_talk_to, a creature
- * at goal 7 set to 1 and conv_begin_with_object -- which has a stub
- * that nothing calls.
+ * nine arguments. (object_talk_to, which sat with them, is the 0x32 hack's
+ * callback, a PUSH-immediate far pointer: src/uw_motion_trap.c.)
  *
  * level_effect_reassign(new, old), from the instructions: the
  * first effect record whose object is `old` pointed at `new` -- word 0's
@@ -1097,18 +1097,22 @@ void uw_motion_stack_answer(uw_motion *m, int n, int all, int cancel) {
 /* ==== the object list's own consistency check ==== */
 
 /* objcheck_tile_chain and objcheck_chain: one chain
- * walked, every object's index counted in the caller's 1,024-byte array,
- * and a container descended into. A second sighting of an index is a fault
+ * walked from its first object (the one a tile's link names, or the held
+ * one), every object's index counted in the caller's 1,024-byte array,
+ * and a container descended into -- the contents' verdict replacing the
+ * chain's so far, as both originals store it. A second sighting of an index is a fault
  * -- a loop in a chain, or the same object linked from two places -- which
  * the original prints through the debug printer, giving up on that chain
  * after ten; the port keeps the count and the same limit. The two tallies
  * are what objcheck_run's totals are checked against. */
-static int objcheck_walk(uw_motion *m, uint8_t *counts, uint16_t link, int *mobiles, int *statics,
+static int objcheck_walk(uw_motion *m, uint8_t *counts, uint16_t o, int *mobiles, int *statics,
                          int depth) {
     uint8_t *ls = m->lseg;
-    uint16_t o = deref_link(m, link);
     int bad = 0, steps = 0;
-    if (depth > 8) return 1;                /* a chain of containers with no end */
+    /* the original's flog_list/count_list have no depth limit -- a loop
+     * through contents ends at counts > 10 -- so this bound is only the C
+     * stack's, past any nesting 0x400 objects can make */
+    if (depth > 0x400) return 1;
     while (o) {
         uint16_t i = obj_index_of(m, o);
         if (i >= 0x400) return 1;
@@ -1118,7 +1122,7 @@ static int objcheck_walk(uw_motion *m, uint8_t *counts, uint16_t link, int *mobi
             if (counts[i] > 10) return 1;
         }
         if (!(rw(ls, o) & 0x8000) && ((rw(ls, (uint16_t)(o + 6)) >> 6) & 0x3ff))
-            bad |= objcheck_walk(m, counts, (uint16_t)(o + 6), mobiles, statics, depth + 1);
+            bad = objcheck_walk(m, counts, deref_link(m, (uint16_t)(o + 6)), mobiles, statics, depth + 1);
         if (i < 0x100) (*mobiles)++;           /* obj_is_mobile: an index below 0x100 */
         else (*statics)++;
         if (++steps > 0x400) return 1;
@@ -1129,7 +1133,8 @@ static int objcheck_walk(uw_motion *m, uint8_t *counts, uint16_t link, int *mobi
 
 /* objcheck_run: a counter per object index -- both free lists
  * marked first, so an index already marked there is a free list with a
- * duplicate in it, then every tile's chain and what the cursor holds. Each
+ * duplicate in it, then every tile's chain and what the cursor holds --
+ * the held object, the chain after it and its contents. Each
  * index should end up counted exactly once, an object being either free or
  * placed and never both or neither, and the two tallies should come to the
  * pools' own sizes: 0xff mobiles and 0x300 statics. True when the level is
@@ -1157,26 +1162,20 @@ int objcheck_run(uw_motion *m) {
     for (y = 0; y < 0x40; y++) {
         for (x = 0; x < 0x40; x++, tile = (uint16_t)(tile + 4))
             if ((rw(m->lseg, (uint16_t)(tile + 2)) >> 6) & 0x3ff)
-                bad |= objcheck_walk(m, counts, (uint16_t)(tile + 2), &mobiles, &statics, 0);
+                bad |= objcheck_walk(m, counts, deref_link(m, (uint16_t)(tile + 2)), &mobiles, &statics, 0);
     }
     if ((rw(ds, ACTION_STATE_WORD) == 1 || rw(ds, ACTION_STATE_WORD) == 0)
-        && (rw(ds, 0x5b06) || rw(ds, 0x5b08))) {
-        uint16_t held = rw(ds, 0x5b06), i = obj_index_of(m, held);
-        if (i < 0x400) {
-            if (counts[i]) bad = 1;
-            counts[i]++;
-            if (i < 0x100) mobiles++; else statics++;
-        }
-    }
+        && (rw(ds, 0x5b06) || rw(ds, 0x5b08)))
+        bad |= objcheck_walk(m, counts, rw(ds, 0x5b06), &mobiles, &statics, 0);
     if (free_mobile + mobiles != 0xff) bad = 1;
     if (free_static + statics != 0x300) bad = 1;
     return !bad;
 }
 
-/* objcheck_quiet: the check each tick asks for, which reports
- * "Problems in object list" once and says no more until a run comes back
- * clean. The message is a box the port does not draw, so a failure is what
- * the counter shows. */
+/* objcheck_quiet: the check each tick asks for, which reports a failure
+ * once and says no more until a run comes back clean --
+ * report_internal_error's four prints to the message scroll, "Underworld
+ * internal error\n ", "Problems in", " " and "object list". */
 int uw_motion_objcheck(uw_motion *m) { return objcheck_run(m); }
 
 void objcheck_quiet(uw_motion *m) {
@@ -1185,7 +1184,12 @@ void objcheck_quiet(uw_motion *m) {
         return;
     }
     if (!m->ds[OBJCHECK_REPORTED]) {
-        UW_NOT_CARRIED(m->not_carried);
+        if (m->scroll) {
+            uw_scroll_print(m->scroll, "Underworld internal error\n ");
+            uw_scroll_print(m->scroll, "Problems in");
+            uw_scroll_print(m->scroll, " ");
+            uw_scroll_print(m->scroll, "object list");
+        } else UW_NOT_CARRIED(m->not_carried);
         m->ds[OBJCHECK_REPORTED] = 1;
     }
 }
